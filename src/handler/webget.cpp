@@ -168,6 +168,8 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     limit.size_limit = global.maxAllowedDownloadSize;
     curl_set_common_options(curl_handle, new_url.data(), &limit);
     header_list = curl_slist_append(header_list, "Content-Type: application/json;charset=utf-8");
+    // Some subscription endpoints reject converter-specific request headers.
+    bool has_user_agent = false;
     if(argument.request_headers)
     {
         for(auto &x : *argument.request_headers)
@@ -175,11 +177,10 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
             auto header = x.first + ": " + x.second;
             header_list = curl_slist_append(header_list, header.data());
         }
-        if(!argument.request_headers->contains("User-Agent"))
-            curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, user_agent_str);
+        has_user_agent = argument.request_headers->contains("User-Agent");
     }
-    header_list = curl_slist_append(header_list, "SubConverter-Request: 1");
-    header_list = curl_slist_append(header_list, "SubConverter-Version: " VERSION);
+    if(!has_user_agent)
+        curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, user_agent_str);
     if(header_list)
         curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, header_list);
 
