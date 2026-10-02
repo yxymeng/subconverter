@@ -1,6 +1,16 @@
 #include <string>
 #include <fstream>
 #include <sys/stat.h>
+#include <atomic>
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "utils/string.h"
 
@@ -108,4 +118,51 @@ int fileWrite(const std::string &path, const std::string &content, bool overwrit
     const bool complete = std::fwrite(content.c_str(), 1, content.size(), fp) == content.size();
     const int closed = std::fclose(fp);
     return complete && closed == 0 ? 0 : -1;
+}
+
+int fileWriteAtomic(const std::string &path, const std::string &content)
+{
+    static std::atomic<unsigned long long> sequence {0};
+    const auto temporary = path + ".tmp-" + std::to_string(getpid()) + "-" + std::to_string(++sequence);
+#ifdef _WIN32
+    const bool complete = fileWrite(temporary, content, true) == 0;
+#else
+    struct stat destination;
+    const bool existing = stat(path.c_str(), &destination) == 0;
+    if(!existing && errno != ENOENT) return -1;
+    const auto mode = existing ? destination.st_mode & 0777 : 0666;
+    const int descriptor = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
+    if(descriptor < 0) return -1;
+    std::FILE *file = nullptr;
+    if(!existing || fchmod(descriptor, mode) == 0)
+        file = fdopen(descriptor, "wb");
+    bool complete = false;
+    if(file)
+    {
+        const bool written = std::fwrite(content.data(), 1, content.size(), file) == content.size();
+        complete = std::fclose(file) == 0 && written;
+    }
+    else
+        close(descriptor);
+#endif
+    if(!complete)
+    {
+        std::remove(temporary.c_str());
+        return -1;
+    }
+    // Replace only after the complete temporary file has been closed successfully.
+#ifdef _WIN32
+    const bool existing = GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool replaced = existing
+        ? ReplaceFileA(path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr)
+        : MoveFileExA(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH);
+#else
+    const bool replaced = std::rename(temporary.c_str(), path.c_str()) == 0;
+#endif
+    if(!replaced)
+    {
+        std::remove(temporary.c_str());
+        return -1;
+    }
+    return 0;
 }

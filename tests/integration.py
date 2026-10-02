@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -157,9 +158,12 @@ class Integration(unittest.TestCase):
     def expire(self, app):
         old=time.time()-120
         for entry in (app.root/'cache').glob('v2-*'): os.utime(entry,(old,old))
-    def generate(self, app, sections):
+    def generate(self, app, sections, file_size_limit=None):
         (app.root/'generate.ini').write_text(''.join('['+name+']\n'+''.join(key+'='+value+'\n' for key,value in items.items()) for name,items in sections))
-        return subprocess.run([str(BINARY),'-f',str(app.pref),'-g'],cwd=app.root,capture_output=True,text=True,timeout=15)
+        command=[str(BINARY),'-f',str(app.pref),'-g']
+        if file_size_limit is not None:
+            command=[sys.executable,'-c','import os,resource,signal,sys; signal.signal(signal.SIGXFSZ,signal.SIG_IGN); resource.setrlimit(resource.RLIMIT_FSIZE,(int(sys.argv[1]),int(sys.argv[1]))); os.execv(sys.argv[2],sys.argv[2:])',str(file_size_limit),*command]
+        return subprocess.run(command,cwd=app.root,capture_output=True,text=True,timeout=15)
     def test_header_policy_and_403_fix(self):
         self.source.routes['/sub'] = lambda n,h: (403 if 'SubConverter-Request' in h or 'SubConverter-Version' in h else 200, SUB, 0)
         self.source.response_headers={'Set-Cookie':'arbitrary_secret=fixture-cookie'}
@@ -473,6 +477,47 @@ class Integration(unittest.TestCase):
         self.config([self.source.origin+'/uncached-rule'])
         cold=self.generate(app,[('fixture',{**items,'refresh':'true','use_stale':'true'})])
         self.assertNotEqual(cold.returncode,0,cold.stderr); self.assertFalse(output.exists())
+
+    def test_offline_generation_handles_write_failures(self):
+        app=self.app()
+        for direct in (False,True):
+            with self.subTest(direct=direct):
+                items={'url':self.source.origin+'/sub'}
+                items.update({'direct':'true'} if direct else {'target':'trojan'})
+                bad={**items,'path':'missing/output.txt'}
+                good={**items,'path':'complete.txt'}
+                for sections in ([('bad',bad)],[('bad',bad),('good',good)]):
+                    result=self.generate(app,sections)
+                    self.assertNotEqual(result.returncode,0,result.stderr)
+                    self.assertIn("Artifact 'bad' generate ERROR! Cannot write output file",result.stderr)
+                    self.assertNotIn("Artifact 'bad' generate SUCCESS",result.stderr)
+                    self.assertFalse((app.root/'missing').exists())
+                    if len(sections)>1:
+                        generated=(app.root/'complete.txt').read_bytes()
+                        if direct: self.assertEqual(generated,b'\xef\xbb\xbf'+SUB)
+                        else: self.assertIn(b'trojan://fixture-password@127.0.0.2:443',base64.b64decode(generated))
+                destination=app.root/'occupied'
+                destination.mkdir(exist_ok=True)
+                sentinel=destination/'keep.txt'
+                sentinel.write_bytes(b'keep old directory')
+                result=self.generate(app,[('blocked',{**items,'path':'occupied'}),('good',good)])
+                self.assertNotEqual(result.returncode,0,result.stderr)
+                self.assertIn("Artifact 'blocked' generate ERROR! Cannot write output file",result.stderr)
+                self.assertEqual(sentinel.read_bytes(),b'keep old directory')
+                self.assertFalse(list(app.root.glob('*.tmp-*')))
+                output=app.root/'complete.txt'
+                output.write_bytes(b'previous artifact')
+                if os.name=='posix': output.chmod(0o600)
+                replaced=self.generate(app,[('good',good)])
+                self.assertEqual(replaced.returncode,0,replaced.stderr)
+                previous=output.read_bytes()
+                if os.name=='posix':
+                    self.assertEqual(output.stat().st_mode & 0o777,0o600)
+                    result=self.generate(app,[('short',good)],file_size_limit=16)
+                    self.assertNotEqual(result.returncode,0,result.stderr)
+                    self.assertIn("Artifact 'short' generate ERROR! Cannot write output file",result.stderr)
+                    self.assertEqual(output.read_bytes(),previous)
+                    self.assertFalse(list(app.root.glob('*.tmp-*')))
 
     def test_configuration_format_parity(self):
         app=self.app()

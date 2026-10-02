@@ -377,23 +377,10 @@ static bool readCache(const std::string &path, std::string &content, std::string
 
 static void writeCache(const std::string &path, const std::string &body, const std::string &headers)
 {
-    static std::atomic<unsigned long long> sequence {0};
-    const auto temporary = path + ".tmp-" + std::to_string(getpid()) + "-" + std::to_string(++sequence);
     const auto packed = std::to_string(headers.size()) + "\n" + headers + body;
     std::lock_guard<std::mutex> lock(cache_rw_lock);
-    if(fileWrite(temporary, packed, true) != 0)
-    {
+    if(fileWriteAtomic(path, packed) != 0)
         writeLog(0, "Cannot write download cache", LOG_LEVEL_WARNING);
-        std::remove(temporary.c_str());
-        return;
-    }
-    // POSIX rename replaces atomically. On Windows use the replacement API below.
-#ifdef _WIN32
-    if(!MoveFileExA(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        std::remove(temporary.c_str());
-#else
-    if(std::rename(temporary.c_str(), path.c_str()) != 0) std::remove(temporary.c_str());
-#endif
 }
 
 std::string webGet(const std::string &url, const std::string &proxy, unsigned int cache_ttl, std::string *response_headers, string_icase_map *request_headers, const std::function<bool(const std::string &)> &validate_content)

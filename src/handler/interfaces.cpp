@@ -1549,18 +1549,20 @@ int simpleGenerator()
                     continue;
                 }
                 // add UTF-8 BOM
-                fileWrite(path, "\xEF\xBB\xBF" + content, true);
-                continue;
+                content = "\xEF\xBB\xBF" + content;
             }
-            ini.get_items(allItems);
-            allItems.emplace("expand", "true");
-            for(auto &y : allItems)
+            else
             {
-                if(y.first == "path")
-                    continue;
-                request.argument.emplace(y.first, y.second);
+                ini.get_items(allItems);
+                allItems.emplace("expand", "true");
+                for(auto &y : allItems)
+                {
+                    if(y.first == "path")
+                        continue;
+                    request.argument.emplace(y.first, y.second);
+                }
+                content = convert(subconverter);
             }
-            content = convert(subconverter);
         }
         if(response.status_code != 200)
         {
@@ -1571,7 +1573,14 @@ int simpleGenerator()
             failed = true;
             continue;
         }
-        fileWrite(path, content, true);
+        if(fileWriteAtomic(path, content) != 0)
+        {
+            writeLog(0, "Artifact '" + x + "' generate ERROR! Cannot write output file.\n", LOG_LEVEL_ERROR);
+            if(sections.size() == 1)
+                return -1;
+            failed = true;
+            continue;
+        }
         auto iter = std::find_if(response.headers.begin(), response.headers.end(), [](auto y){ return y.first == "Subscription-UserInfo"; });
         if(iter != response.headers.end())
             writeLog(0, "User Info for artifact '" + x + "': " + subInfoToMessage(iter->second), LOG_LEVEL_INFO);
