@@ -11,6 +11,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winioctl.h>
+#include <ntdef.h>
+#include <io.h>
 #endif
 
 #include "utils/string.h"
@@ -127,6 +130,37 @@ int fileWriteAtomic(const std::string &path, const std::string &content)
     std::error_code error;
     for(unsigned int hops = 0; ; ++hops)
     {
+#ifdef _WIN32
+        const DWORD attributes = GetFileAttributesW(destination_path.c_str());
+        if(attributes == INVALID_FILE_ATTRIBUTES)
+        {
+            const DWORD failure = GetLastError();
+            if(failure != ERROR_FILE_NOT_FOUND && failure != ERROR_PATH_NOT_FOUND) return -1;
+            break;
+        }
+        if(!(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) break;
+        if(hops == 40) return -1;
+        HANDLE link = CreateFileW(destination_path.c_str(), 0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if(link == INVALID_HANDLE_VALUE) return -1;
+        alignas(REPARSE_DATA_BUFFER) char data[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+        DWORD returned = 0;
+        const bool read = DeviceIoControl(link, FSCTL_GET_REPARSE_POINT, nullptr, 0,
+            data, sizeof(data), &returned, nullptr);
+        CloseHandle(link);
+        if(!read) return -1;
+        const auto reparse = reinterpret_cast<const REPARSE_DATA_BUFFER *>(data);
+        if(reparse->ReparseTag != IO_REPARSE_TAG_SYMLINK) return -1;
+        const auto &buffer = reparse->SymbolicLinkReparseBuffer;
+        std::wstring name(buffer.PathBuffer + buffer.SubstituteNameOffset / sizeof(wchar_t),
+            buffer.SubstituteNameLength / sizeof(wchar_t));
+        if(name.rfind(L"\\??\\UNC\\", 0) == 0)
+            name = L"\\\\" + name.substr(8);
+        else if(name.rfind(L"\\??\\", 0) == 0)
+            name.erase(0, 4);
+        const std::filesystem::path target(name);
+#else
         const auto status = std::filesystem::symlink_status(destination_path, error);
         if(error)
         {
@@ -137,16 +171,20 @@ int fileWriteAtomic(const std::string &path, const std::string &content)
         if(hops == 40) return -1;
         const auto target = std::filesystem::read_symlink(destination_path, error);
         if(error) return -1;
+#endif
         destination_path = target.is_absolute() ? target : destination_path.parent_path() / target;
     }
-    const auto output_path = destination_path.string();
     static std::atomic<unsigned long long> sequence {0};
-    const auto temporary = output_path + ".tmp-" + std::to_string(getpid()) + "-" + std::to_string(++sequence);
+    auto temporary = destination_path;
+    temporary += ".tmp-" + std::to_string(getpid()) + "-" + std::to_string(++sequence);
 #ifdef _WIN32
-    const bool complete = fileWrite(temporary, content, true) == 0;
+    const int descriptor = _wopen(temporary.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+    if(descriptor < 0) return -1;
+    std::FILE *file = _fdopen(descriptor, "wb");
+    if(!file) _close(descriptor);
 #else
     struct stat destination;
-    const bool existing = stat(output_path.c_str(), &destination) == 0;
+    const bool existing = stat(destination_path.c_str(), &destination) == 0;
     if(!existing && errno != ENOENT) return -1;
     const auto mode = existing ? destination.st_mode & 0777 : 0666;
     const int descriptor = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
@@ -154,32 +192,31 @@ int fileWriteAtomic(const std::string &path, const std::string &content)
     std::FILE *file = nullptr;
     if(!existing || fchmod(descriptor, mode) == 0)
         file = fdopen(descriptor, "wb");
+    if(!file) close(descriptor);
+#endif
     bool complete = false;
     if(file)
     {
         const bool written = std::fwrite(content.data(), 1, content.size(), file) == content.size();
         complete = std::fclose(file) == 0 && written;
     }
-    else
-        close(descriptor);
-#endif
     if(!complete)
     {
-        std::remove(temporary.c_str());
+        std::filesystem::remove(temporary, error);
         return -1;
     }
     // Replace only after the complete temporary file has been closed successfully.
 #ifdef _WIN32
-    const bool existing = GetFileAttributesA(output_path.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool existing = GetFileAttributesW(destination_path.c_str()) != INVALID_FILE_ATTRIBUTES;
     const bool replaced = existing
-        ? ReplaceFileA(output_path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr)
-        : MoveFileExA(temporary.c_str(), output_path.c_str(), MOVEFILE_WRITE_THROUGH);
+        ? ReplaceFileW(destination_path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr)
+        : MoveFileExW(temporary.c_str(), destination_path.c_str(), MOVEFILE_WRITE_THROUGH);
 #else
-    const bool replaced = std::rename(temporary.c_str(), output_path.c_str()) == 0;
+    const bool replaced = std::rename(temporary.c_str(), destination_path.c_str()) == 0;
 #endif
     if(!replaced)
     {
-        std::remove(temporary.c_str());
+        std::filesystem::remove(temporary, error);
         return -1;
     }
     return 0;

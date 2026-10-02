@@ -563,6 +563,14 @@ class Integration(unittest.TestCase):
         absolute=self.generate(app,[('linked',items)])
         self.assertEqual(absolute.returncode,0,absolute.stderr)
         self.assertTrue(published.is_symlink()); self.assertEqual(published.read_bytes(),output.read_bytes())
+        unicode_output=app.root/'outputs'/'目标-雪.txt'
+        for target in ('outputs/目标-雪.txt',unicode_output):
+            published.unlink()
+            unicode_output.write_bytes(b'previous artifact')
+            published.symlink_to(target)
+            generated=self.generate(app,[('linked',items)])
+            self.assertEqual(generated.returncode,0,generated.stderr)
+            self.assertTrue(published.is_symlink()); self.assertEqual(unicode_output.read_bytes(),content)
         published.unlink(); intermediate.unlink()
         published.symlink_to('links/next.txt'); intermediate.symlink_to('../published.txt')
         cyclic=self.generate(app,[('linked',items)])
