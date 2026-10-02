@@ -6,6 +6,11 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/xattr.h>
+#elif defined(__APPLE__)
+#include <sys/acl.h>
+#endif
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -124,6 +129,38 @@ int fileWrite(const std::string &path, const std::string &content, bool overwrit
     return complete && closed == 0 ? 0 : -1;
 }
 
+#ifndef _WIN32
+static bool preserveFilePermissions(const std::filesystem::path &path, int descriptor, const struct stat &original)
+{
+    if(fchmod(descriptor, 0) != 0 || fchown(descriptor, original.st_uid, original.st_gid) != 0)
+        return false;
+#ifdef __linux__
+    const char *attribute = "system.posix_acl_access";
+    const auto size = getxattr(path.c_str(), attribute, nullptr, 0);
+    if(size < 0)
+    {
+        if(errno != ENODATA && errno != ENOTSUP) return false;
+        if(fremovexattr(descriptor, attribute) != 0 && errno != ENODATA && errno != ENOTSUP)
+            return false;
+    }
+    else
+    {
+        std::string acl(size, '\0');
+        if(getxattr(path.c_str(), attribute, acl.data(), acl.size()) != size ||
+            fsetxattr(descriptor, attribute, acl.data(), acl.size(), 0) != 0)
+            return false;
+    }
+#elif defined(__APPLE__)
+    acl_t acl = acl_get_file(path.c_str(), ACL_TYPE_EXTENDED);
+    if(!acl) return false;
+    const bool copied = acl_set_fd(descriptor, acl) == 0;
+    acl_free(acl);
+    if(!copied) return false;
+#endif
+    return fchmod(descriptor, original.st_mode & 07777) == 0;
+}
+#endif
+
 int fileWriteAtomic(const std::string &path, const std::string &content)
 {
     std::filesystem::path destination_path(path);
@@ -186,18 +223,20 @@ int fileWriteAtomic(const std::string &path, const std::string &content)
     struct stat destination;
     const bool existing = stat(destination_path.c_str(), &destination) == 0;
     if(!existing && errno != ENOENT) return -1;
-    const auto mode = existing ? destination.st_mode & 0777 : 0666;
+    const auto mode = existing ? 0600 : 0666;
     const int descriptor = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
     if(descriptor < 0) return -1;
-    std::FILE *file = nullptr;
-    if(!existing || fchmod(descriptor, mode) == 0)
-        file = fdopen(descriptor, "wb");
+    std::FILE *file = fdopen(descriptor, "wb");
     if(!file) close(descriptor);
 #endif
     bool complete = false;
     if(file)
     {
-        const bool written = std::fwrite(content.data(), 1, content.size(), file) == content.size();
+        bool written = std::fwrite(content.data(), 1, content.size(), file) == content.size() && std::fflush(file) == 0;
+#ifndef _WIN32
+        if(written && existing)
+            written = preserveFilePermissions(destination_path, descriptor, destination);
+#endif
         complete = std::fclose(file) == 0 && written;
     }
     if(!complete)

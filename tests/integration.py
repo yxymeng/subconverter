@@ -13,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import struct
 import tempfile
 import threading
 import time
@@ -577,6 +578,41 @@ class Integration(unittest.TestCase):
         self.assertNotEqual(cyclic.returncode,0,cyclic.stderr)
         self.assertIn('Cannot write output file',cyclic.stderr)
         self.assertTrue(published.is_symlink()); self.assertTrue(intermediate.is_symlink())
+
+    @unittest.skipIf(os.name=='nt','POSIX ownership and ACL regression')
+    def test_offline_generation_preserves_extended_permissions(self):
+        app=self.app()
+        output=app.root/'private.txt'
+        link=app.root/'published.txt'
+        link.symlink_to('private.txt')
+        for direct in (False,True):
+            for linked in (False,True):
+                with self.subTest(direct=direct,linked=linked):
+                    output.write_bytes(b'previous artifact')
+                    if os.geteuid()==0: os.chown(output,65534,65534)
+                    output.chmod(0o2640)
+                    if sys.platform.startswith('linux'):
+                        acl=struct.pack('<I',2)+b''.join(struct.pack('<HHI',tag,permission,identifier) for tag,permission,identifier in (
+                            (1,6,0xffffffff),(2,4,12345),(4,0,0xffffffff),(16,4,0xffffffff),(32,0,0xffffffff)))
+                        os.setxattr(output,'system.posix_acl_access',acl)
+                        permissions=os.getxattr(output,'system.posix_acl_access')
+                    elif sys.platform=='darwin':
+                        subprocess.run(['chmod','-N',str(output)],check=True,capture_output=True)
+                        subprocess.run(['chmod','+a','everyone allow read',str(output)],check=True,capture_output=True)
+                        permissions=subprocess.run(['ls','-le',str(output)],check=True,capture_output=True,text=True).stdout.splitlines()[1:]
+                    before=output.stat()
+                    items={'path':'published.txt' if linked else 'private.txt','url':self.source.origin+'/sub'}
+                    items.update({'direct':'true'} if direct else {'target':'trojan'})
+                    result=self.generate(app,[('private',items)])
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    after=output.stat()
+                    self.assertEqual((after.st_uid,after.st_gid,after.st_mode & 0o7777),(before.st_uid,before.st_gid,before.st_mode & 0o7777))
+                    if sys.platform.startswith('linux'): self.assertEqual(os.getxattr(output,'system.posix_acl_access'),permissions)
+                    elif sys.platform=='darwin': self.assertEqual(subprocess.run(['ls','-le',str(output)],check=True,capture_output=True,text=True).stdout.splitlines()[1:],permissions)
+                    self.assertTrue(link.is_symlink())
+                    generated=output.read_bytes()
+                    if direct: self.assertEqual(generated,b'\xef\xbb\xbf'+SUB)
+                    else: self.assertIn(b'trojan://fixture-password@127.0.0.2:443',base64.b64decode(generated))
 
     def test_configuration_format_parity(self):
         app=self.app()
