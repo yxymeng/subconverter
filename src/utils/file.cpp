@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cerrno>
 #include <fcntl.h>
+#include <filesystem>
 #include <unistd.h>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -122,13 +123,30 @@ int fileWrite(const std::string &path, const std::string &content, bool overwrit
 
 int fileWriteAtomic(const std::string &path, const std::string &content)
 {
+    std::filesystem::path destination_path(path);
+    std::error_code error;
+    for(unsigned int hops = 0; ; ++hops)
+    {
+        const auto status = std::filesystem::symlink_status(destination_path, error);
+        if(error)
+        {
+            if(error != std::errc::no_such_file_or_directory) return -1;
+            break;
+        }
+        if(!std::filesystem::is_symlink(status)) break;
+        if(hops == 40) return -1;
+        const auto target = std::filesystem::read_symlink(destination_path, error);
+        if(error) return -1;
+        destination_path = target.is_absolute() ? target : destination_path.parent_path() / target;
+    }
+    const auto output_path = destination_path.string();
     static std::atomic<unsigned long long> sequence {0};
-    const auto temporary = path + ".tmp-" + std::to_string(getpid()) + "-" + std::to_string(++sequence);
+    const auto temporary = output_path + ".tmp-" + std::to_string(getpid()) + "-" + std::to_string(++sequence);
 #ifdef _WIN32
     const bool complete = fileWrite(temporary, content, true) == 0;
 #else
     struct stat destination;
-    const bool existing = stat(path.c_str(), &destination) == 0;
+    const bool existing = stat(output_path.c_str(), &destination) == 0;
     if(!existing && errno != ENOENT) return -1;
     const auto mode = existing ? destination.st_mode & 0777 : 0666;
     const int descriptor = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
@@ -152,12 +170,12 @@ int fileWriteAtomic(const std::string &path, const std::string &content)
     }
     // Replace only after the complete temporary file has been closed successfully.
 #ifdef _WIN32
-    const bool existing = GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool existing = GetFileAttributesA(output_path.c_str()) != INVALID_FILE_ATTRIBUTES;
     const bool replaced = existing
-        ? ReplaceFileA(path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr)
-        : MoveFileExA(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH);
+        ? ReplaceFileA(output_path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr)
+        : MoveFileExA(temporary.c_str(), output_path.c_str(), MOVEFILE_WRITE_THROUGH);
 #else
-    const bool replaced = std::rename(temporary.c_str(), path.c_str()) == 0;
+    const bool replaced = std::rename(temporary.c_str(), output_path.c_str()) == 0;
 #endif
     if(!replaced)
     {

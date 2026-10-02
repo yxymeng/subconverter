@@ -519,6 +519,57 @@ class Integration(unittest.TestCase):
                     self.assertEqual(output.read_bytes(),previous)
                     self.assertFalse(list(app.root.glob('*.tmp-*')))
 
+    def test_offline_generation_preserves_symlinks(self):
+        app=self.app()
+        (app.root/'outputs').mkdir()
+        (app.root/'links').mkdir()
+        output=app.root/'outputs'/'target.txt'
+        intermediate=app.root/'links'/'next.txt'
+        published=app.root/'published.txt'
+        try:
+            intermediate.symlink_to('../outputs/target.txt')
+            published.symlink_to('links/next.txt')
+        except OSError as error:
+            if os.name=='nt' and error.winerror==1314: self.skipTest('runner cannot create symbolic links')
+            raise
+        for direct in (False,True):
+            with self.subTest(direct=direct):
+                items={'path':'published.txt','url':self.source.origin+'/sub'}
+                items.update({'direct':'true'} if direct else {'target':'trojan'})
+                output.write_bytes(b'previous artifact')
+                if os.name=='posix': output.chmod(0o600)
+                generated=self.generate(app,[('linked',items)])
+                self.assertEqual(generated.returncode,0,generated.stderr)
+                self.assertTrue(published.is_symlink()); self.assertTrue(intermediate.is_symlink())
+                self.assertEqual(Path(os.readlink(published)),Path('links/next.txt'))
+                self.assertEqual(Path(os.readlink(intermediate)),Path('../outputs/target.txt'))
+                content=output.read_bytes()
+                if direct: self.assertEqual(content,b'\xef\xbb\xbf'+SUB)
+                else: self.assertIn(b'trojan://fixture-password@127.0.0.2:443',base64.b64decode(content))
+                if os.name=='posix':
+                    self.assertEqual(output.stat().st_mode & 0o777,0o600)
+                    failed=self.generate(app,[('linked',items)],file_size_limit=16)
+                    self.assertNotEqual(failed.returncode,0,failed.stderr)
+                    self.assertEqual(output.read_bytes(),content)
+                    self.assertTrue(published.is_symlink()); self.assertTrue(intermediate.is_symlink())
+                    self.assertFalse(list((app.root/'outputs').glob('*.tmp-*')))
+                output.unlink()
+                dangling=self.generate(app,[('linked',items)])
+                self.assertEqual(dangling.returncode,0,dangling.stderr)
+                self.assertEqual(output.read_bytes(),content)
+                self.assertTrue(published.is_symlink()); self.assertTrue(intermediate.is_symlink())
+        published.unlink()
+        published.symlink_to(output)
+        absolute=self.generate(app,[('linked',items)])
+        self.assertEqual(absolute.returncode,0,absolute.stderr)
+        self.assertTrue(published.is_symlink()); self.assertEqual(published.read_bytes(),output.read_bytes())
+        published.unlink(); intermediate.unlink()
+        published.symlink_to('links/next.txt'); intermediate.symlink_to('../published.txt')
+        cyclic=self.generate(app,[('linked',items)])
+        self.assertNotEqual(cyclic.returncode,0,cyclic.stderr)
+        self.assertIn('Cannot write output file',cyclic.stderr)
+        self.assertTrue(published.is_symlink()); self.assertTrue(intermediate.is_symlink())
+
     def test_configuration_format_parity(self):
         app=self.app()
         configs={
