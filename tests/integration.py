@@ -613,6 +613,11 @@ class Integration(unittest.TestCase):
                     generated=output.read_bytes()
                     if direct: self.assertEqual(generated,b'\xef\xbb\xbf'+SUB)
                     else: self.assertIn(b'trojan://fixture-password@127.0.0.2:443',base64.b64decode(generated))
+                    if sys.platform=='darwin':
+                        subprocess.run(['chmod','-N',str(output)],check=True,capture_output=True)
+                        no_acl=self.generate(app,[('private',items)])
+                        self.assertEqual(no_acl.returncode,0,no_acl.stderr)
+                        self.assertEqual(subprocess.run(['ls','-le',str(output)],check=True,capture_output=True,text=True).stdout.splitlines()[1:],[])
 
     def test_configuration_format_parity(self):
         app=self.app()

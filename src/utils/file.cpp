@@ -152,6 +152,12 @@ static bool preserveFilePermissions(const std::filesystem::path &path, int descr
     }
 #elif defined(__APPLE__)
     acl_t acl = acl_get_file(path.c_str(), ACL_TYPE_EXTENDED);
+    if(!acl && errno == ENOENT)
+    {
+        struct stat current;
+        if(stat(path.c_str(), &current) != 0) return false;
+        acl = acl_init(0);
+    }
     if(!acl) return false;
     const bool copied = acl_set_fd(descriptor, acl) == 0;
     acl_free(acl);
