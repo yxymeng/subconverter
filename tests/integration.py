@@ -579,6 +579,46 @@ class Integration(unittest.TestCase):
         self.assertIn('Cannot write output file',cyclic.stderr)
         self.assertTrue(published.is_symlink()); self.assertTrue(intermediate.is_symlink())
 
+    @unittest.skipIf(os.name=='nt','POSIX hard-link regression')
+    def test_offline_generation_rejects_hard_linked_targets(self):
+        app=self.app()
+        output=app.root/'private.txt'
+        alias=app.root/'published.txt'
+        link=app.root/'linked.txt'
+        output.write_bytes(b'previous artifact')
+        output.chmod(0o600)
+        os.link(output,alias)
+        link.symlink_to('private.txt')
+        before=output.stat()
+        self.assertEqual(before.st_nlink,2)
+        for direct in (False,True):
+            for linked in (False,True):
+                with self.subTest(direct=direct,linked=linked):
+                    items={'path':'linked.txt' if linked else 'private.txt','url':self.source.origin+'/sub'}
+                    items.update({'direct':'true'} if direct else {'target':'trojan'})
+                    good={**items,'path':'complete.txt'}
+                    for sections in ([('linked',items)],[('linked',items),('good',good)]):
+                        result=self.generate(app,sections)
+                        self.assertNotEqual(result.returncode,0,result.stderr)
+                        self.assertIn("Artifact 'linked' generate ERROR! Cannot write output file",result.stderr)
+                        self.assertNotIn("Artifact 'linked' generate SUCCESS",result.stderr)
+                        for path in (output,alias):
+                            self.assertEqual(path.read_bytes(),b'previous artifact')
+                            after=path.stat()
+                            self.assertEqual((after.st_dev,after.st_ino,after.st_nlink,after.st_mode),
+                                             (before.st_dev,before.st_ino,before.st_nlink,before.st_mode))
+                        self.assertTrue(link.is_symlink())
+                        self.assertFalse(list(app.root.glob('*.tmp-*')))
+                        if len(sections)>1:
+                            generated=(app.root/'complete.txt').read_bytes()
+                            if direct: self.assertEqual(generated,b'\xef\xbb\xbf'+SUB)
+                            else: self.assertIn(b'trojan://fixture-password@127.0.0.2:443',base64.b64decode(generated))
+        alias.unlink()
+        recovered=self.generate(app,[('linked',items)])
+        self.assertEqual(recovered.returncode,0,recovered.stderr)
+        self.assertEqual(output.read_bytes(),b'\xef\xbb\xbf'+SUB)
+        self.assertTrue(link.is_symlink())
+
     @unittest.skipIf(os.name=='nt','POSIX ownership and ACL regression')
     def test_offline_generation_preserves_extended_permissions(self):
         app=self.app()

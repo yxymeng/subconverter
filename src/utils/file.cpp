@@ -229,6 +229,7 @@ int fileWriteAtomic(const std::string &path, const std::string &content)
     struct stat destination;
     const bool existing = stat(destination_path.c_str(), &destination) == 0;
     if(!existing && errno != ENOENT) return -1;
+    if(existing && destination.st_nlink > 1) return -1;
     const auto mode = existing ? 0600 : 0666;
     const int descriptor = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
     if(descriptor < 0) return -1;
