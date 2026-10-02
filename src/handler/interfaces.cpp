@@ -328,7 +328,13 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
     }
     //check if we need to read configuration
     if(global.reloadConfOnRequest && (!global.APIMode || global.CFWChildProcess) && !global.generatorMode)
-        readConf();
+    {
+        if(!readConf())
+        {
+            *status_code = 400;
+            return "Failed to reload configuration";
+        }
+    }
 
     /// string values
     std::string argUrl = getUrlArg(argument, "url");

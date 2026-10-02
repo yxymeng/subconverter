@@ -184,8 +184,7 @@ int main(int argc, char *argv[])
     bool check_only = false;
     for(int i = 1; i < argc; ++i) if(std::string(argv[i]) == "--check") check_only = true;
     if(!check_only) SetConsoleTitle("SubConverter " VERSION);
-    readConf();
-    if(!global.configurationLoaded) return 1;
+    if(!readConf()) return 1;
     const auto configured_port = getEnv("PORT");
     if(!configured_port.empty()) global.listenPort = to_int(configured_port, global.listenPort);
     if(global.listenPort < 1 || global.listenPort > 65535) { writeLog(0, "Invalid listening port", LOG_LEVEL_FATAL); return 1; }
@@ -246,7 +245,11 @@ int main(int argc, char *argv[])
                 return "Forbidden\n";
             }
         }
-        readConf();
+        if(!readConf())
+        {
+            response.status_code = 400;
+            return "Failed to reload configuration\n";
+        }
         if(!global.updateRulesetOnRequest)
             refreshRulesets(global.customRulesets, global.rulesetsContent);
         return "done\n";
@@ -266,7 +269,11 @@ int main(int argc, char *argv[])
         std::string type = getUrlArg(request.argument, "type");
         if(type == "form" || type == "direct")
         {
-            fileWrite(global.prefPath, request.postdata, true);
+            if(!readConf(&request.postdata))
+            {
+                response.status_code = 400;
+                return "Failed to reload configuration\n";
+            }
         }
         else
         {
@@ -274,7 +281,6 @@ int main(int argc, char *argv[])
             return "Not Implemented\n";
         }
 
-        readConf();
         if(!global.updateRulesetOnRequest)
             refreshRulesets(global.customRulesets, global.rulesetsContent);
         return "done\n";

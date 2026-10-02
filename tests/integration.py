@@ -415,6 +415,61 @@ class Integration(unittest.TestCase):
         bound=self.app()
         status,report,_=bound.request(f'http://localhost:{bound.port}/sub?target=clash')
         self.assertGreaterEqual(status,400,report); self.assertIn('Self-referencing',str(report))
+    def test_failed_configuration_reload_preserves_previous_settings(self):
+        for mode in ('readconf','updateconf','automatic'):
+            app=self.app(parallel=2,extra='subscription_source_headers='+json.dumps({self.source.origin:{'X-Policy':'old'}}))
+            original=app.pref.read_text()
+            if mode=='automatic':
+                original=original.replace('api_mode=true','api_mode=false').replace('[common]\n','[common]\nreload_conf_on_request=true\n')
+                app.pref.write_text(original)
+                self.assertEqual(get(app.origin+'/readconf')[0],200)
+            expected=json.loads(get(app.origin+'/status')[1])
+            invalid={
+                'ini':original.replace('listen=127.0.0.1','listen=127.0.0.2').replace('max_parallel_downloads=2','max_parallel_downloads=7').replace('subscription_source_headers='+json.dumps({self.source.origin:{'X-Policy':'old'}}),'subscription_source_headers=[]'),
+                'toml':'version = 1\n[common]\napi_mode=true\nproxy_subscription="http://127.0.0.1:1"\n[server]\nlisten="127.0.0.2"\n[advanced]\nmax_parallel_downloads=7\nsubscription_source_headers="[]"\n',
+                'yaml':'common:\n  api_mode: true\n  proxy_subscription: http://127.0.0.1:1\nserver:\n  listen: 127.0.0.2\nadvanced:\n  max_parallel_downloads: 7\n  subscription_source_headers: "[]"\n'
+            }
+            invalid['yaml-type']=invalid['yaml'].replace('subscription_source_headers: "[]"','subscription_source_headers: []')
+            invalid['toml-type']=invalid['toml'].replace('subscription_source_headers="[]"','subscription_source_headers=[]')
+            for format,body in invalid.items():
+                with self.subTest(mode=mode,format=format):
+                    counts=self.source.counts.copy()
+                    if mode=='updateconf':
+                        connection=http.client.HTTPConnection('127.0.0.1',app.port,timeout=10)
+                        connection.request('POST','/updateconf?type=direct',body.encode())
+                        response=connection.getresponse(); status=response.status; error=response.read(); connection.close()
+                        self.assertEqual(app.pref.read_text(),original)
+                    else:
+                        app.pref.write_text(body)
+                        if mode=='readconf': status,error,_=get(app.origin+'/readconf')
+                        else:
+                            status,report,_=app.request(self.source.origin+'/blocked-'+format,refresh='true')
+                            error=str(report).encode()
+                    self.assertEqual(status,400,error)
+                    self.assertIn(b'Failed to reload configuration',error)
+                    self.assertEqual(self.source.counts,counts)
+                    self.assertEqual(json.loads(get(app.origin+'/status')[1]),expected)
+                    if mode=='automatic': app.pref.write_text(original)
+                    source=self.source.origin+'/retained-'+mode+'-'+format
+                    status,report,_=app.request(source,refresh='true')
+                    self.assertEqual(status,200,report)
+                    self.assertEqual(self.source.headers[urlsplit(source).path]['X-Policy'],'old')
+                    app.pref.write_text(original)
+            if mode=='updateconf':
+                updated=original.replace('"old"','"new"').replace('max_parallel_downloads=2','max_parallel_downloads=3')
+                self.source.routes['/import-rules']=(200,b'DIRECT,[]MATCH\n',0)
+                updated=updated.replace('proxy_config=NONE','proxy_config='+self.source.origin).replace('[ruleset]\n','[ruleset]\nruleset=!!import:http://127.0.0.2:1/import-rules\n')
+                updated+='\n# common: this is an INI comment\n'
+                connection=http.client.HTTPConnection('127.0.0.1',app.port,timeout=10)
+                connection.request('POST','/updateconf?type=direct',updated.encode())
+                response=connection.getresponse(); self.assertEqual(response.status,200,response.read()); connection.close()
+                self.assertEqual(app.pref.read_text(),updated)
+                self.assertEqual(json.loads(get(app.origin+'/status')[1])['max_parallel_downloads'],3)
+                self.assertEqual(self.source.counts['/import-rules'],1)
+                status,report,_=app.request(self.source.origin+'/updated-policy',refresh='true')
+                self.assertEqual(status,200,report)
+                self.assertEqual(self.source.headers['/updated-policy']['X-Policy'],'new')
+
     def test_self_request_uses_concrete_hostname_binding(self):
         addresses={address[4][0] for address in socket.getaddrinfo('localhost',None,socket.AF_UNSPEC,socket.SOCK_STREAM)}
         if not {'127.0.0.1','::1'}.issubset(addresses): self.skipTest('localhost does not resolve to both loopback families')
@@ -637,7 +692,6 @@ class Integration(unittest.TestCase):
         self.assertIn('Cannot write output file',cyclic.stderr)
         self.assertTrue(published.is_symlink()); self.assertTrue(intermediate.is_symlink())
 
-    @unittest.skipIf(os.name=='nt','POSIX hard-link regression')
     def test_offline_generation_rejects_hard_linked_targets(self):
         app=self.app()
         output=app.root/'private.txt'

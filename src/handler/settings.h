@@ -114,7 +114,7 @@ struct DownloadSettings
 // A complete immutable snapshot keeps downloads safe while preferences reload.
 std::shared_ptr<const DownloadSettings> downloadSettings();
 
-int importItems(string_array &target, bool scope_limit = true);
+int importItems(string_array &target, bool scope_limit = true, const Settings &settings = global);
 int loadExternalConfig(std::string &path, ExternalConfig &ext);
 
 template <class... Args>

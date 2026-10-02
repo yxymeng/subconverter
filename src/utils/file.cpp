@@ -221,6 +221,21 @@ int fileWriteAtomic(const std::string &path, const std::string &content)
     auto temporary = destination_path;
     temporary += ".tmp-" + std::to_string(getpid()) + "-" + std::to_string(++sequence);
 #ifdef _WIN32
+    HANDLE destination = CreateFileW(destination_path.c_str(), 0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if(destination == INVALID_HANDLE_VALUE)
+    {
+        const DWORD failure = GetLastError();
+        if(failure != ERROR_FILE_NOT_FOUND && failure != ERROR_PATH_NOT_FOUND) return -1;
+    }
+    else
+    {
+        BY_HANDLE_FILE_INFORMATION information {};
+        const bool unique = GetFileInformationByHandle(destination, &information) && information.nNumberOfLinks <= 1;
+        CloseHandle(destination);
+        if(!unique) return -1;
+    }
     const int descriptor = _wopen(temporary.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
     if(descriptor < 0) return -1;
     std::FILE *file = _fdopen(descriptor, "wb");

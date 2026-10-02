@@ -62,6 +62,12 @@ void safe_set_times(RegexMatchConfigs data)
     global.timeNodeRules.swap(data);
 }
 
+void safe_set_settings(Settings settings)
+{
+    std::scoped_lock guard(on_emoji, on_rename, on_stream, on_time);
+    global = std::move(settings);
+}
+
 namespace {
 class FetchExecutor
 {
