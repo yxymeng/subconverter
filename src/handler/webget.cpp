@@ -217,6 +217,7 @@ static inline void curl_set_common_options(CURL *curl_handle, const char *url, c
 
 static bool selfRequest(const std::string &url)
 {
+    if(global.boundListenPort == 0) return false;
     CURLU *parsed = curl_url();
     defer(curl_url_cleanup(parsed);)
     if(curl_url_set(parsed, CURLUPART_URL, url.c_str(), 0) != CURLUE_OK) return false;
@@ -224,8 +225,8 @@ static bool selfRequest(const std::string &url)
     defer(curl_free(host); curl_free(port);)
     if(curl_url_get(parsed, CURLUPART_HOST, &host, 0) != CURLUE_OK ||
        curl_url_get(parsed, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) != CURLUE_OK) return false;
-    return to_int(port) == global.listenPort &&
-        hostPointsToLocalServer(host, global.listenAddress);
+    return to_int(port) == global.boundListenPort &&
+        hostPointsToLocalServer(host, global.boundListenAddress);
 }
 
 static int curlGet(const FetchArgument &argument, FetchResult &result)

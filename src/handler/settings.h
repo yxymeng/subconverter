@@ -27,6 +27,9 @@ struct Settings
     std::vector<RulesetContent> rulesetsContent;
     std::string listenAddress = "127.0.0.1", defaultUrls, insertUrls, managedConfigPrefix;
     int listenPort = 25500, maxPendingConns = 10, maxConcurThreads = 4;
+    // Listener endpoint is captured before serving and is not changed by configuration reloads.
+    std::string boundListenAddress;
+    int boundListenPort = 0;
     bool prependInsert = true, skipFailedLinks = false;
     bool APIMode = true, writeManagedConfig = false, enableRuleGen = true, updateRulesetOnRequest = false, overwriteOriginalRules = true;
     bool printDbgInfo = false, CFWChildProcess = false, appendUserinfo = true, asyncFetchRuleset = true, surgeResolveHostname = true;

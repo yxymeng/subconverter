@@ -333,6 +333,8 @@ int main(int argc, char *argv[])
     if(!env_port.empty())
         global.listenPort = to_int(env_port, global.listenPort);
     listener_args args = {global.listenAddress, global.listenPort, global.maxPendingConns, global.maxConcurThreads, cron_tick_caller, 200};
+    global.boundListenAddress = args.listen_address;
+    global.boundListenPort = args.port;
     //std::cout<<"Serving HTTP @ http://"<<listen_address<<":"<<listen_port<<std::endl;
     const int server_result = webServer.start_web_server_multi(&args);
 

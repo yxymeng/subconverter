@@ -412,6 +412,39 @@ class Integration(unittest.TestCase):
         bound=self.app()
         status,report,_=bound.request(f'http://localhost:{bound.port}/sub?target=clash')
         self.assertGreaterEqual(status,400,report); self.assertIn('Self-referencing',str(report))
+    def test_self_request_keeps_bound_endpoint_after_config_reload(self):
+        for automatic in (False,True):
+            app=self.app(listen='0.0.0.0',parallel=2,fallback=False,workers=2)
+            original=app.pref.read_text()
+            if automatic:
+                original=original.replace('api_mode=true','api_mode=false').replace('[common]\n','[common]\nreload_conf_on_request=true\n')
+                app.pref.write_text(original)
+                self.assertEqual(get(app.origin+'/readconf')[0],200)
+            for change_address,change_port in ((True,False),(False,True),(True,True)):
+                with self.subTest(automatic=automatic,address=change_address,port=change_port):
+                    configured=original
+                    if change_address: configured=configured.replace('listen=0.0.0.0','listen=127.0.0.2')
+                    if change_port: configured=configured.replace(f'port={app.port}',f'port={self.source.server.server_port}')
+                    app.pref.write_text(configured)
+                    if not automatic: self.assertEqual(get(app.origin+'/readconf')[0],200)
+                    destination=app.origin+'/sub?target=clash'
+                    path=f'/reload-redirect-{automatic}-{change_address}-{change_port}'
+                    self.source.routes[path]=(302,b'',0,{'Location':destination})
+                    for source in (destination,self.source.origin+path):
+                        status,report,_=app.request(source,refresh='true')
+                        self.assertGreaterEqual(status,400,report)
+                        self.assertIn('Self-referencing',str(report))
+                        self.assertEqual(report['downloads'][0]['attempts'],1)
+                    self.assertEqual(self.source.counts[path],1)
+                    status,raw,_=get(app.origin+'/status')
+                    self.assertEqual(status,200)
+                    state=json.loads(raw)
+                    self.assertEqual(state['listen'],'127.0.0.2' if change_address else '0.0.0.0')
+                    self.assertEqual(state['port'],self.source.server.server_port if change_port else app.port)
+                    status,report,_=app.request(self.source.origin+'/sub',refresh='true')
+                    self.assertEqual(status,200,report)
+                    self.assertIn('fixture-node',report['output'])
+
     def test_self_request_rejected_at_each_redirect_hop(self):
         app=self.app(listen='0.0.0.0',parallel=2,fallback=False,workers=2)
         for resource in ('subscription','config','rules'):
