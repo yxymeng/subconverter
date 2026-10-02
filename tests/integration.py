@@ -320,7 +320,10 @@ class Integration(unittest.TestCase):
         app=self.app()
         broken=self.app(proxy='http://127.0.0.1:1')
         status,report,_=broken.request(self.source.origin+'/sub')
-        self.assertGreaterEqual(status,400);self.assertIn('connect',str(report).lower())
+        self.assertGreaterEqual(status,400,report)
+        # A refused proxy connection can reach the connect timeout on Windows.
+        self.assertIn(report['downloads'][0]['transport_code'],(7,28),report)
+        self.assertEqual(self.source.counts['/sub'],0)
         self.assertIn('proxy',str(report['downloads']))
         status,report,_=app.request(app.origin+'/sub?target=clash')
         self.assertGreaterEqual(status,400);self.assertIn('Self-referencing',str(report))
