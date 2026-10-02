@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""Behavior regressions against the complete binary; sources never leave localhost."""
+import argparse
+import base64
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+import json
+import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import tempfile
+import threading
+import time
+import unittest
+from urllib.error import HTTPError
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, build_opener, ProxyHandler
+
+OPENER = build_opener(ProxyHandler({}))
+SUB = base64.b64encode(b'trojan://fixture-password@127.0.0.2:443#fixture-node')
+BINARY = None
+BASE = None
+
+def get(url, headers=None):
+    try:
+        with OPENER.open(Request(url, headers=headers or {}), timeout=30) as response:
+            return response.status, response.read(), dict(response.headers)
+    except HTTPError as error:
+        return error.code, error.read(), dict(error.headers)
+
+class Source:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.counts = Counter()
+        self.headers = {}
+        self.routes = {}
+        self.response_headers = {}
+        self.active = 0
+        self.peak = 0
+        owner = self
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
+            def log_message(self, *args): pass
+            def do_GET(self):
+                path = urlsplit(self.path).path
+                with owner.lock:
+                    owner.counts[path] += 1
+                    number = owner.counts[path]
+                    owner.headers[path] = dict(self.headers)
+                    owner.active += 1
+                    owner.peak = max(owner.peak, owner.active)
+                try:
+                    route = owner.routes.get(path, (200, SUB, 0))
+                    if callable(route): route = route(number, self.headers)
+                    code, body, delay = route[:3]
+                    time.sleep(delay)
+                    self.send_response(code)
+                    self.send_header('Content-Length', str(len(body) + (100 if len(route) > 3 and route[3] == 'truncate' else 0)))
+                    for key,value in owner.response_headers.items(): self.send_header(key,value)
+                    self.end_headers()
+                    try: self.wfile.write(body)
+                    except (BrokenPipeError, ConnectionResetError): pass
+                    if len(route) > 3: self.close_connection = True
+                finally:
+                    with owner.lock: owner.active -= 1
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.server.daemon_threads = True
+        self.origin = 'http://127.0.0.1:' + str(self.server.server_port)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+class App:
+    def __init__(self, extra='', asynchronous=True, parallel=4, proxy='NONE', default_url=''):
+        self.temp = tempfile.TemporaryDirectory(prefix='subconverter-test-')
+        self.root = Path(self.temp.name)
+        shutil.copytree(BASE, self.root, dirs_exist_ok=True)
+        (self.root / 'base' / 'fixture.yml').write_text('port: 7890\nproxies: []\nproxy-groups: []\nrules: []\n')
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0)); self.port = s.getsockname()[1]
+        self.pref = self.root / 'fixture.ini'
+        self.pref.write_text(f'''[common]
+api_mode=true
+default_url={default_url}
+enable_insert=false
+clash_rule_base=base/fixture.yml
+proxy_config=NONE
+proxy_ruleset=NONE
+proxy_subscription={proxy}
+[node_pref]
+clash_use_new_field_name=true
+[ruleset]
+enabled=true
+overwrite_original_rules=true
+[server]
+listen=127.0.0.1
+port={self.port}
+serve_file_root=web
+[advanced]
+log_level=verbose
+max_allowed_rules=0
+max_allowed_download_size=0
+max_concurrent_threads=8
+enable_cache=true
+cache_subscription=60
+cache_ruleset=60
+cache_config=60
+serve_cache_on_fetch_fail=true
+async_fetch_ruleset={str(asynchronous).lower()}
+max_parallel_downloads={parallel}
+connect_timeout=1
+download_timeout=1
+skip_failed_links=true
+{extra}
+''')
+        self.log = open(self.root / 'stderr.log', 'wb')
+        self.process = subprocess.Popen([str(BINARY), '-f', str(self.pref)], stdout=subprocess.DEVNULL, stderr=self.log)
+        self.origin = 'http://127.0.0.1:' + str(self.port)
+        for _ in range(100):
+            if self.process.poll() is not None: raise RuntimeError((self.root/'stderr.log').read_text())
+            try:
+                if get(self.origin + '/status')[0] == 200: break
+            except OSError: pass
+            time.sleep(.05)
+        else: raise RuntimeError('server did not start')
+    def request(self, source, config=None, headers=None, **params):
+        query = {'target':'clash', 'url':source, 'emoji':'false', **params}
+        if config: query['config'] = config
+        status, raw, response_headers = get(self.origin + '/diagnose?' + urlencode(query), headers)
+        return status, json.loads(raw), response_headers
+    def close(self):
+        self.process.terminate()
+        try: self.process.wait(timeout=8)
+        except subprocess.TimeoutExpired: self.process.kill(); self.process.wait()
+        self.log.close()
+        self.temp.cleanup()
+
+class Integration(unittest.TestCase):
+    def setUp(self): self.source = Source(); self.apps=[]
+    def tearDown(self):
+        for app in self.apps: app.close()
+        self.source.close()
+    def app(self, **kwargs):
+        app=App(**kwargs); self.apps.append(app); return app
+    def config(self, urls):
+        self.source.routes['/config'] = (200, ('[custom]\nenable_rule_generator=true\noverwrite_original_rules=true\n' + ''.join('ruleset=DIRECT,'+url+'\n' for url in urls) + 'ruleset=DIRECT,[]MATCH\n').encode(), 0)
+        return self.source.origin+'/config'
+    def test_header_policy_and_403_fix(self):
+        self.source.routes['/sub'] = lambda n,h: (403 if 'SubConverter-Request' in h or 'SubConverter-Version' in h else 200, SUB, 0)
+        self.source.response_headers={'Set-Cookie':'arbitrary_secret=fixture-cookie'}
+        app=self.app(extra='subscription_source_headers='+json.dumps({self.source.origin:{'X-Source-Key':'source-secret'}}))
+        status, report, headers = app.request(self.source.origin+'/sub?token=fake-token', headers={'User-Agent':'fixture-UA','Cookie':'incoming-secret','Authorization':'Bearer incoming-token','X-Custom':'unrelated'})
+        self.assertEqual(status,200,report)
+        sent=self.source.headers['/sub']
+        self.assertEqual(sent['User-Agent'],'fixture-UA')
+        self.assertEqual(sent['X-Source-Key'],'source-secret')
+        self.assertNotIn('Cookie',sent); self.assertNotIn('Authorization',sent); self.assertNotIn('X-Custom',sent)
+        self.assertEqual(headers['X-Request-ID'],report['request_id'])
+        diagnostic=json.dumps({k:v for k,v in report.items() if k!='output'})
+        log=(app.root/'stderr.log').read_text()
+        for secret in ['fake-token','incoming-secret','incoming-token','source-secret']:
+            self.assertNotIn(secret,diagnostic); self.assertNotIn(secret,log)
+        # http.client sends no User-Agent, exercising the default outbound fallback.
+        connection=http.client.HTTPConnection('127.0.0.1',app.port,timeout=10)
+        connection.request('GET','/diagnose?'+urlencode({'target':'clash','url':self.source.origin+'/fallback'}))
+        response=connection.getresponse();data=json.loads(response.read());connection.close()
+        self.assertEqual(response.status,200,data)
+        self.assertTrue(self.source.headers['/fallback']['User-Agent'].startswith('subconverter/'))
+        self.assertNotIn('Cookie',self.source.headers['/fallback'])
+        app.request(self.source.origin+'/again',refresh='true')
+        self.assertNotIn('Cookie',self.source.headers['/again'])
+        self.assertNotIn('fixture-cookie',(app.root/'stderr.log').read_text())
+
+    def test_distinct_errors_and_retry_buffer(self):
+        app=self.app()
+        for path, route, expected in [('/forbidden',(403,b'denied',0),'HTTP 403'),('/invalid',(200,b'not a subscription',0),'cannot be parsed'),('/timeout',(200,SUB,1.2),'Timeout')]:
+            self.source.routes[path]=route
+            status,report,_=app.request(self.source.origin+path)
+            self.assertGreaterEqual(status,400,report)
+            if expected=='Timeout': self.assertIn('Timeout',str(report['downloads']))
+            else: self.assertIn(expected,report['error'])
+        status,report,_=app.request(self.source.origin+'/not-exportable',target='ss')
+        self.assertEqual(status,422,report);self.assertIn('exported',report['error'])
+        self.source.routes['/retry']=lambda n,h: (200,b'INVALID-PREFIX',0,'truncate') if n==1 else (200,SUB,0)
+        status,report,_=app.request(self.source.origin+'/retry')
+        self.assertEqual(status,200,report)
+        self.assertEqual(report['downloads'][0]['attempts'],2)
+        self.assertEqual(self.source.counts['/retry'],2)
+    def test_failed_update_preserves_cache_and_manual_stale(self):
+        app=self.app()
+        rule=self.source.origin+'/rule'
+        config=self.config([rule])
+        self.source.routes['/rule']=(200,b'DOMAIN,old.example\n',0)
+        status,report,_=app.request(self.source.origin+'/sub',config)
+        self.assertEqual(status,200,report); self.assertIn('old.example',report['output'])
+        for route in [(200,b'PARTIAL-SECRET',0,'truncate'),
+                      (200,b'<html>upstream unavailable</html>',0),
+                      (200,b'{"error":"unavailable"}',0),
+                      (200,b'DOMAIN,\n',0),
+                      (200,b'IP-CIDR,192.0.2.0/4294967296\n',0),
+                      (200,b'IP-CIDR6,1:2:3:4:5:6:7:8::9/64\n',0),
+                      (200,b'SRC-IP-CIDR,<html>error</html>\n',0)]:
+            self.source.routes['/rule']=route
+            status,report,_=app.request(self.source.origin+'/sub',config,refresh='true')
+            self.assertEqual(status,502,report); self.assertEqual(report['output'],'')
+            self.assertIn('Required ruleset',report['error'])
+            if len(route)==3: self.assertIn('Invalid ruleset content',str(report['downloads']))
+            status,report,_=app.request(self.source.origin+'/sub',config,use_stale='true')
+            self.assertEqual(status,200,report); self.assertIn('old.example',report['output'])
+            self.assertNotIn('PARTIAL',report['output'])
+            self.assertIn('stale',[d['cache'] for d in report['downloads']])
+
+    def test_ruleset_formats_and_empty_payload(self):
+        app=self.app()
+        rule=self.source.origin+'/rule'
+        for prefix,body,expected in [('',b'# comment\nDOMAIN,valid.example // note\n','valid.example'),
+                                     ('quanx:',b'host,valid.example,DIRECT\n','valid.example'),
+                                     ('clash-domain:',b'payload:\n  - +.valid.example\n','valid.example'),
+                                     ('clash-ipcidr:',b'payload:\n  - 192.0.2.0/24\n','192.0.2.0/24'),
+                                     ('',b'IP-CIDR6,::ffff:192.0.2.0/128\n','::ffff:192.0.2.0/128'),
+                                     ('',b'SRC-IP-CIDR,2001:db8::/32\n','2001:db8::/32'),
+                                     ('clash-classic:',b'payload:\n  - DOMAIN,valid.example\n','valid.example'),
+                                     ('clash-domain:',b'payload: []\n','MATCH,DIRECT'),
+                                     ('',b'# intentionally empty ruleset\n','MATCH,DIRECT')]:
+            self.source.routes['/rule']=(200,body,0)
+            config=self.config([prefix+rule])
+            status,report,_=app.request(self.source.origin+'/sub',config,refresh='true')
+            self.assertEqual(status,200,report); self.assertIn(expected,report['output'])
+        for prefix,body in [('clash-domain:',b'payload:\n  - <html>error</html>\n'),
+                            ('clash-ipcidr:',b'payload:\n  - valid.example\n'),
+                            ('clash-classic:',b'payload:\n  - {error: unavailable}\n')]:
+            self.source.routes['/rule']=(200,body,0)
+            status,report,_=app.request(self.source.origin+'/sub',self.config([prefix+rule]),refresh='true')
+            self.assertEqual(status,502,report)
+
+    def test_source_headers_redirect_boundary(self):
+        destination=Source()
+        try:
+            app=self.app(extra='subscription_source_headers='+json.dumps({self.source.origin:{'X-Source-Key':'source-secret'}}))
+            self.source.routes['/redirect']=(302,b'',0)
+            self.source.response_headers={'Location':'/same-origin'}
+            status,report,_=app.request(self.source.origin+'/redirect')
+            self.assertEqual(status,200,report)
+            self.assertEqual(self.source.headers['/same-origin']['X-Source-Key'],'source-secret')
+            self.source.response_headers={'Location':destination.origin+'/destination'}
+            status,report,_=app.request(self.source.origin+'/redirect',refresh='true')
+            self.assertGreaterEqual(status,400,report)
+            self.assertIn('Cross-origin redirect',str(report))
+            self.assertEqual(destination.counts['/destination'],0)
+            self.assertEqual([d['attempts'] for d in report['downloads']],[1])
+            # Ordinary subscriptions retain cross-origin redirects without dedicated source headers.
+            plain=self.app()
+            status,report,_=plain.request(self.source.origin+'/redirect')
+            self.assertEqual(status,200,report)
+            self.assertNotIn('X-Source-Key',destination.headers['/destination'])
+        finally: destination.close()
+    def test_ttl_force_identity_and_shared_requests(self):
+        app=self.app()
+        config=self.config([self.source.origin+'/rule'])
+        self.source.routes['/rule']=(200,b'DOMAIN,first.example\n',.15)
+        source=self.source.origin+'/sub'
+        first=app.request(source,config)[1]
+        self.assertTrue(first['success'],first)
+        counts=self.source.counts.copy()
+        self.assertEqual(first['output'],app.request(source,config)[1]['output'])
+        self.assertEqual(counts,self.source.counts)
+        self.source.routes['/rule']=(200,b'DOMAIN,second.example\n',.15)
+        for entry in (app.root/'cache').glob('v2-*'):
+            import os
+            os.utime(entry,(time.time()-120,time.time()-120))
+        self.assertIn('second.example',app.request(source,config)[1]['output'])
+        self.assertGreater(self.source.counts['/rule'],counts['/rule'])
+        self.assertEqual(app.request(source,config,refresh='true')[0],200)
+        self.source.routes['/unique']=(200,SUB,.25)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results=list(pool.map(lambda _:app.request(self.source.origin+'/unique'),range(4)))
+        self.assertTrue(all(r[0]==200 for r in results),results)
+        self.assertEqual(self.source.counts['/unique'],1)
+        self.source.routes['/concurrent-failure']=(403,b'denied',.25)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            failures=list(pool.map(lambda _:app.request(self.source.origin+'/concurrent-failure'),range(4)))
+        self.assertEqual(self.source.counts['/concurrent-failure'],1)
+        for status,report,_ in failures:
+            self.assertGreaterEqual(status,400)
+            self.assertIn(403,[entry['http_status'] for entry in report['downloads']])
+        app.request(source,headers={'User-Agent':'UA-A'})
+        app.request(source,headers={'User-Agent':'UA-B'})
+        self.assertEqual(self.source.counts['/sub'],5)  # cold, expired, force, two distinct UAs
+    def test_bounded_parallelism_and_rule_order(self):
+        app=self.app(parallel=3)
+        urls=[]
+        for i in range(12):
+            path=f'/rule-{i}';urls.append(self.source.origin+path)
+            self.source.routes[path]=(200,f'DOMAIN,rule-{i}.example\n'.encode(),.08)
+        config=self.config(urls)
+        status,report,_=app.request(self.source.origin+'/sub',config)
+        self.assertEqual(status,200,report)
+        self.assertLessEqual(self.source.peak,3); self.assertGreater(self.source.peak,1)
+        positions=[report['output'].index(f'rule-{i}.example') for i in range(12)]
+        self.assertEqual(positions,sorted(positions))
+    def test_startup_check_port_conflict_and_bad_config(self):
+        app=self.app()
+        result=subprocess.run([str(BINARY),'-f',str(app.pref),'--check'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        report=json.loads(result.stdout[result.stdout.index('{'):])
+        self.assertEqual(report['config'],str(app.pref));self.assertEqual(report['proxies']['subscription']['mode'],'direct')
+        collision=subprocess.run([str(BINARY),'-f',str(app.pref)],capture_output=True,text=True,timeout=10)
+        self.assertNotEqual(collision.returncode,0); self.assertIn('Cannot bind',collision.stderr)
+        for name,body in [('bad.toml','version = \n[common]'),('bad.ini','[common]\n[advanced]\nsubscription_source_headers=[]')]:
+            path=app.root/name;path.write_text(body)
+            bad=subprocess.run([str(BINARY),'-f',str(path),'--check'],capture_output=True,text=True,timeout=10)
+            self.assertNotEqual(bad.returncode,0,bad.stdout)
+    def test_proxy_failure_and_self_request(self):
+        app=self.app()
+        broken=self.app(proxy='http://127.0.0.1:1')
+        status,report,_=broken.request(self.source.origin+'/sub')
+        self.assertGreaterEqual(status,400);self.assertIn('connect',str(report).lower())
+        self.assertIn('proxy',str(report['downloads']))
+        status,report,_=app.request(app.origin+'/sub?target=clash')
+        self.assertGreaterEqual(status,400);self.assertIn('Self-referencing',str(report))
+    def test_configuration_format_parity(self):
+        app=self.app()
+        configs={
+            'ini':'[common]\nproxy_subscription=NONE\n[server]\nlisten=127.0.0.1\nport=25500\n[advanced]\nmax_parallel_downloads=2\ndownload_timeout=7\nconnect_timeout=3\nsubscription_source_headers={}\n',
+            'toml':'version = 1\n[common]\nproxy_subscription="NONE"\n[server]\nlisten="127.0.0.1"\nport=25500\n[advanced]\nmax_parallel_downloads=2\ndownload_timeout=7\nconnect_timeout=3\nsubscription_source_headers="{}"\n',
+            'yml':'common:\n  proxy_subscription: NONE\nserver:\n  listen: 127.0.0.1\n  port: 25500\nadvanced:\n  max_parallel_downloads: 2\n  download_timeout: 7\n  connect_timeout: 3\n  subscription_source_headers: "{}"\n'
+        }
+        for ext,body in configs.items():
+            path=app.root/('parity.'+ext);path.write_text(body)
+            check=subprocess.run([str(BINARY),'-f',str(path),'--check'],capture_output=True,text=True,timeout=10)
+            self.assertEqual(check.returncode,0,check.stderr)
+            data=json.loads(check.stdout[check.stdout.index('{'):])
+            self.assertEqual(data['max_parallel_downloads'],2)
+            self.assertEqual(data['download_timeout'],7)
+            self.assertEqual(data['connect_timeout'],3)
+    def test_static_conversion_entry(self):
+        app=self.app()
+        status,body,_=get(app.origin+'/')
+        self.assertEqual(status,200)
+        self.assertIn(b'converter.js',body)
+        self.assertEqual(get(app.origin+'/converter.js')[0],200)
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--binary',required=True,type=Path)
+    parser.add_argument('--base',type=Path,default=Path(__file__).resolve().parents[1]/'base')
+    args,remaining=parser.parse_known_args()
+    BINARY=args.binary.resolve();BASE=args.base.resolve()
+    unittest.main(argv=['integration.py',*remaining])

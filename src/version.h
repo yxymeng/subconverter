@@ -3,4 +3,8 @@
 
 #define VERSION "v0.9.1"
 
+#ifndef BUILD_COMMIT
+#define BUILD_COMMIT "unknown"
+#endif
+
 #endif // VERSION_H_INCLUDED

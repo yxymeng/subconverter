@@ -6,3 +6,4 @@ base/cache
 build
 .xmake
 build
+**/__pycache__/

@@ -1,9 +1,21 @@
 #include <iostream>
 #include <unistd.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 //#include <mutex>
 #include <thread>
 #include <atomic>
+#include <memory>
+#include <mutex>
+#include <filesystem>
+#include <fstream>
+#include <condition_variable>
+#include "handler/diagnostics.h"
 
 #include <curl/curl.h>
 
@@ -23,15 +35,77 @@
 #endif // _stat
 #endif // _WIN32
 
-/*
-using guarded_mutex = std::lock_guard<std::mutex>;
 std::mutex cache_rw_lock;
-*/
+static const auto user_agent_str = "subconverter/" VERSION " cURL/" LIBCURL_VERSION;
+static thread_local std::string latest_fetch_error;
+std::string lastFetchError() { return latest_fetch_error; }
 
-RWLock cache_rw_lock;
+std::string sourceOrigin(const std::string &url)
+{
+    CURLU *parsed = curl_url();
+    if(!parsed) return "";
+    defer(curl_url_cleanup(parsed);)
+    if(curl_url_set(parsed, CURLUPART_URL, url.c_str(), 0) != CURLUE_OK) return "";
+    char *scheme = nullptr, *host = nullptr, *port = nullptr;
+    defer(curl_free(scheme); curl_free(host); curl_free(port);)
+    if(curl_url_get(parsed, CURLUPART_SCHEME, &scheme, 0) != CURLUE_OK ||
+       curl_url_get(parsed, CURLUPART_HOST, &host, 0) != CURLUE_OK) return "";
+    std::string origin = toLower(std::string(scheme) + "://" + host);
+    if(curl_url_get(parsed, CURLUPART_PORT, &port, CURLU_NO_DEFAULT_PORT) == CURLUE_OK)
+        origin += ":" + std::string(port);
+    return origin;
+}
+
+struct CacheFlight
+{
+    std::mutex mutex;
+    std::atomic<unsigned long long> generation {0};
+    std::string content, headers, error;
+    bool success = false;
+    int status_code = 0, transport_code = 0;
+};
+static std::mutex flights_mutex;
+static std::map<std::string, std::weak_ptr<CacheFlight>> flights;
+static std::shared_ptr<CacheFlight> cacheFlight(const std::string &key)
+{
+    std::lock_guard<std::mutex> lock(flights_mutex);
+    auto flight = flights[key].lock();
+    if(!flight) { flight = std::make_shared<CacheFlight>(); flights[key] = flight; }
+    if(flights.size() > 256)
+        for(auto it = flights.begin(); it != flights.end();)
+            if(it->second.expired()) it = flights.erase(it); else ++it;
+    return flight;
+}
+
+std::string fetchCacheKey(const std::string &url, const std::string &proxy, const string_icase_map *headers)
+{
+    std::string identity = url + "\n" + proxy;
+    if(headers)
+        for(const auto &[key, value] : *headers) identity += "\n" + toLower(key) + ":" + value;
+    if(!headers || !headers->contains("User-Agent")) identity += "\nuser-agent:" + std::string(user_agent_str);
+    return getMD5(identity);
+}
+
+class DownloadPermit
+{
+    static std::mutex mutex;
+    static std::condition_variable ready;
+    static int active;
+public:
+    DownloadPermit()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        ready.wait(lock, [] { return active < downloadSettings()->maxParallelDownloads; });
+        ++active;
+    }
+    ~DownloadPermit() { std::lock_guard<std::mutex> lock(mutex); --active; ready.notify_one(); }
+};
+std::mutex DownloadPermit::mutex;
+std::condition_variable DownloadPermit::ready;
+int DownloadPermit::active = 0;
+
 
 //std::string user_agent_str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36";
-static auto user_agent_str = "subconverter/" VERSION " cURL/" LIBCURL_VERSION;
 
 struct curl_progress_data
 {
@@ -40,28 +114,56 @@ struct curl_progress_data
 
 static inline void curl_init()
 {
-    static bool init = false;
-    if(!init)
-    {
-        curl_global_init(CURL_GLOBAL_ALL);
-        init = true;
-    }
+    static std::once_flag initialized;
+    std::call_once(initialized, [] { curl_global_init(CURL_GLOBAL_ALL); });
 }
 
-static int writer(char *data, size_t size, size_t nmemb, std::string *writerData)
+static size_t writer(char *data, size_t size, size_t nmemb, std::string *writerData)
 {
     if(writerData == nullptr)
         return 0;
 
     writerData->append(data, size*nmemb);
 
-    return static_cast<int>(size * nmemb);
+    return size * nmemb;
 }
 
-static int dummy_writer(char *, size_t size, size_t nmemb, void *)
+struct ResponseHeaders
+{
+    CURL *handle;
+    std::string *content;
+    bool restrict_origin;
+    bool blocked = false;
+};
+
+static size_t headerWriter(char *data, size_t size, size_t nmemb, ResponseHeaders *response)
+{
+    const auto length = size * nmemb;
+    const std::string line(data, length);
+    response->content->append(line);
+    long status = 0;
+    curl_easy_getinfo(response->handle, CURLINFO_RESPONSE_CODE, &status);
+    if(response->restrict_origin && status >= 300 && status < 400 && startsWith(toLower(line), "location:"))
+    {
+        char *current_url = nullptr, *redirect_url = nullptr;
+        curl_easy_getinfo(response->handle, CURLINFO_EFFECTIVE_URL, &current_url);
+        CURLU *parsed = curl_url();
+        defer(curl_url_cleanup(parsed); curl_free(redirect_url);)
+        if(current_url && parsed && curl_url_set(parsed, CURLUPART_URL, current_url, 0) == CURLUE_OK &&
+           curl_url_set(parsed, CURLUPART_URL, trimWhitespace(line.substr(9), true, true).c_str(), 0) == CURLUE_OK &&
+           curl_url_get(parsed, CURLUPART_URL, &redirect_url, 0) == CURLUE_OK && sourceOrigin(current_url) != sourceOrigin(redirect_url))
+        {
+            response->blocked = true;
+            return 0;
+        }
+    }
+    return length;
+}
+
+static size_t dummy_writer(char *, size_t size, size_t nmemb, void *)
 {
     /// dummy writer, do not save anything
-    return static_cast<int>(size * nmemb);
+    return size * nmemb;
 }
 
 //static int size_checker(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow)
@@ -79,60 +181,23 @@ static int size_checker(void *clientp, curl_off_t, curl_off_t dlnow, curl_off_t,
     return 0;
 }
 
-static int logger(CURL *handle, curl_infotype type, char *data, size_t size, void *userptr)
-{
-    (void)handle;
-    (void)userptr;
-    std::string prefix;
-    switch(type)
-    {
-    case CURLINFO_TEXT:
-        prefix = "CURL_INFO: ";
-        break;
-    case CURLINFO_HEADER_IN:
-        prefix = "CURL_HEADER: < ";
-        break;
-    case CURLINFO_HEADER_OUT:
-        prefix = "CURL_HEADER: > ";
-        break;
-    case CURLINFO_DATA_IN:
-    case CURLINFO_DATA_OUT:
-    default:
-        return 0;
-    }
-    std::string content(data, size);
-    if(content.find("\r\n") != std::string::npos)
-    {
-        string_array lines = split(content, "\r\n");
-        for(auto &x : lines)
-        {
-            std::string log_content = prefix;
-            log_content += x;
-            writeLog(0, log_content, LOG_LEVEL_VERBOSE);
-        }
-    }
-    else
-    {
-        std::string log_content = prefix;
-        log_content += trimWhitespace(content);
-        writeLog(0, log_content, LOG_LEVEL_VERBOSE);
-    }
-    return 0;
-}
-
 static inline void curl_set_common_options(CURL *curl_handle, const char *url, curl_progress_data *data)
 {
     curl_easy_setopt(curl_handle, CURLOPT_URL, url);
-    curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, global.logLevel == LOG_LEVEL_VERBOSE ? 1L : 0L);
-    curl_easy_setopt(curl_handle, CURLOPT_DEBUGFUNCTION, logger);
+    // cURL debug text may echo cookie values or URL credentials even outside headers.
+    // Emit our structured metadata instead of raw transport debug output.
+    curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, 0L);
     curl_easy_setopt(curl_handle, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl_handle, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 20L);
     curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 15L);
+    const auto settings = downloadSettings();
+    curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, static_cast<long>(settings->downloadTimeout));
+    curl_easy_setopt(curl_handle, CURLOPT_CONNECTTIMEOUT, static_cast<long>(settings->connectTimeout));
     curl_easy_setopt(curl_handle, CURLOPT_COOKIEFILE, "");
+    curl_easy_setopt(curl_handle, CURLOPT_COOKIELIST, "ALL");
     if(data)
     {
         if(data->size_limit)
@@ -142,136 +207,125 @@ static inline void curl_set_common_options(CURL *curl_handle, const char *url, c
     }
 }
 
-//static std::string curlGet(const std::string &url, const std::string &proxy, std::string &response_headers, CURLcode &return_code, const string_map &request_headers)
+static bool selfRequest(const std::string &url)
+{
+    CURLU *parsed = curl_url();
+    defer(curl_url_cleanup(parsed);)
+    if(curl_url_set(parsed, CURLUPART_URL, url.c_str(), 0) != CURLUE_OK) return false;
+    char *host = nullptr, *port = nullptr;
+    defer(curl_free(host); curl_free(port);)
+    if(curl_url_get(parsed, CURLUPART_HOST, &host, 0) != CURLUE_OK ||
+       curl_url_get(parsed, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) != CURLUE_OK) return false;
+    const std::string name = toLower(host);
+    return to_int(port) == global.listenPort &&
+        (name == "localhost" || name == "127.0.0.1" || name == "[::1]" || name == global.listenAddress);
+}
+
 static int curlGet(const FetchArgument &argument, FetchResult &result)
 {
-    CURL *curl_handle;
-    std::string *data = result.content, new_url = argument.url;
-    curl_slist *header_list = nullptr;
-    defer(curl_slist_free_all(header_list);)
-    long retVal;
-
+    const auto start = std::chrono::steady_clock::now();
+    latest_fetch_error.clear();
+    result.success = false;
+    result.error.clear();
     curl_init();
-
-    curl_handle = curl_easy_init();
-    if(!argument.proxy.empty())
+    DownloadPermit permit;
+    struct CurlDelete { void operator()(CURL *p) const { curl_easy_cleanup(p); } };
+    // Reset request state while retaining this worker's DNS and connection cache.
+    static thread_local std::unique_ptr<CURL, CurlDelete> reusable(curl_easy_init());
+    CURL *handle = reusable.get();
+    curl_easy_reset(handle);
+    curl_slist *headers = nullptr;
+    defer(curl_slist_free_all(headers);)
+    std::string url = argument.url;
+    curl_progress_data limit {global.maxAllowedDownloadSize};
+    curl_set_common_options(handle, url.c_str(), &limit);
+    // Empty means explicitly direct. SYSTEM resolves to a selected proxy before this layer.
+    if(startsWith(argument.proxy, "cors:"))
     {
-        if(startsWith(argument.proxy, "cors:"))
-        {
-            header_list = curl_slist_append(header_list, "X-Requested-With: subconverter " VERSION);
-            new_url = argument.proxy.substr(5) + argument.url;
-        }
-        else
-            curl_easy_setopt(curl_handle, CURLOPT_PROXY, argument.proxy.data());
+        url = argument.proxy.substr(5) + argument.url;
+        curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+        headers = curl_slist_append(headers, "X-Requested-With: subconverter " VERSION);
     }
-    curl_progress_data limit;
-    limit.size_limit = global.maxAllowedDownloadSize;
-    curl_set_common_options(curl_handle, new_url.data(), &limit);
-    header_list = curl_slist_append(header_list, "Content-Type: application/json;charset=utf-8");
-    // Some subscription endpoints reject converter-specific request headers.
-    bool has_user_agent = false;
+    else
+    {
+        curl_easy_setopt(handle, CURLOPT_PROXY, argument.proxy.c_str());
+        // A selected proxy is an explicit choice, including loopback destinations.
+        curl_easy_setopt(handle, CURLOPT_NOPROXY, "");
+    }
+    bool has_user_agent = argument.request_headers && argument.request_headers->contains("User-Agent");
+    if(!has_user_agent) curl_easy_setopt(handle, CURLOPT_USERAGENT, user_agent_str);
+    if(argument.method == HTTP_POST || argument.method == HTTP_PATCH)
+        headers = curl_slist_append(headers, "Content-Type: application/json;charset=utf-8");
     if(argument.request_headers)
-    {
-        for(auto &x : *argument.request_headers)
-        {
-            auto header = x.first + ": " + x.second;
-            header_list = curl_slist_append(header_list, header.data());
-        }
-        has_user_agent = argument.request_headers->contains("User-Agent");
-    }
-    if(!has_user_agent)
-        curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, user_agent_str);
-    if(header_list)
-        curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, header_list);
-
-    if(result.content)
-    {
-        curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, writer);
-        curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, result.content);
-    }
-    else
-        curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, dummy_writer);
-    if(result.response_headers)
-    {
-        curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, writer);
-        curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, result.response_headers);
-    }
-    else
-        curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, dummy_writer);
-
+        for(const auto &[key, value] : *argument.request_headers)
+            headers = curl_slist_append(headers, (key + ": " + value).c_str());
+    curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+    std::string body, response_headers;
+    const auto settings = downloadSettings();
+    const auto source_headers = settings->subscriptionHeaders.find(sourceOrigin(argument.url));
+    ResponseHeaders response {handle, &response_headers, argument.request_headers &&
+        source_headers != settings->subscriptionHeaders.end() && !source_headers->second.empty()};
+    curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, writer);
+    curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, headerWriter);
+    curl_easy_setopt(handle, CURLOPT_HEADERDATA, &response);
     if(argument.cookies)
+        for(const auto &cookie : split(*argument.cookies, "\r\n"))
+            curl_easy_setopt(handle, CURLOPT_COOKIELIST, cookie.c_str());
+    if(argument.method == HTTP_POST) curl_easy_setopt(handle, CURLOPT_POST, 1L);
+    if(argument.method == HTTP_PATCH) curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "PATCH");
+    if(argument.method == HTTP_HEAD) curl_easy_setopt(handle, CURLOPT_NOBODY, 1L);
+    if(argument.post_data && (argument.method == HTTP_POST || argument.method == HTTP_PATCH))
     {
-        string_array cookies = split(*argument.cookies, "\r\n");
-        for(auto &x : cookies)
-            curl_easy_setopt(curl_handle, CURLOPT_COOKIELIST, x.c_str());
+        curl_easy_setopt(handle, CURLOPT_POSTFIELDS, argument.post_data->c_str());
+        curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE, static_cast<long>(argument.post_data->size()));
     }
-
-    switch(argument.method)
-    {
-    case HTTP_POST:
-        curl_easy_setopt(curl_handle, CURLOPT_POST, 1L);
-        if(argument.post_data)
-        {
-            curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, argument.post_data->data());
-            curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, argument.post_data->size());
-        }
-        break;
-    case HTTP_PATCH:
-        curl_easy_setopt(curl_handle, CURLOPT_CUSTOMREQUEST, "PATCH");
-        if(argument.post_data)
-        {
-            curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, argument.post_data->data());
-            curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, argument.post_data->size());
-        }
-        break;
-    case HTTP_HEAD:
-        curl_easy_setopt(curl_handle, CURLOPT_NOBODY, 1L);
-        break;
-    case HTTP_GET:
-        break;
-    }
-
-    unsigned int fail_count = 0, max_fails = 1;
-    while(true)
-    {
-        retVal = curl_easy_perform(curl_handle);
-        if(retVal == CURLE_OK || max_fails <= fail_count || global.APIMode)
-            break;
-        else
-            fail_count++;
-    }
-
     long code = 0;
-    curl_easy_getinfo(curl_handle, CURLINFO_HTTP_CODE, &code);
-    *result.status_code = code;
-
+    CURLcode transfer = CURLE_OK;
+    const bool self = selfRequest(url);
+    const unsigned int attempts = (argument.method == HTTP_GET || argument.method == HTTP_HEAD) ? 2 : 1;
+    unsigned int tried = 0;
+    for(; tried < attempts;)
+    {
+        ++tried;
+        body.clear(); response_headers.clear();
+        transfer = self ? CURLE_TOO_MANY_REDIRECTS : curl_easy_perform(handle);
+        curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &code);
+        if(transfer == CURLE_OK || transfer == CURLE_FILESIZE_EXCEEDED ||
+           transfer == CURLE_ABORTED_BY_CALLBACK || self || response.blocked) break;
+    }
+    result.transport_code = transfer;
+    result.success = transfer == CURLE_OK && code >= 200 && code < 300;
+    if(transfer != CURLE_OK) result.error = self ? "Self-referencing conversion request rejected" : curl_easy_strerror(transfer);
+    else if(!result.success) result.error = "HTTP " + std::to_string(code);
+    if(response.blocked) result.error = "Cross-origin redirect with source-specific headers rejected";
+    if(result.success && argument.validate_content && !argument.validate_content(body))
+    {
+        result.success = false;
+        result.error = "Invalid ruleset content";
+    }
+    if(result.status_code) *result.status_code = static_cast<int>(code);
+    if(result.content) *result.content = result.success || argument.keep_resp_on_fail ? body : "";
+    if(result.response_headers) *result.response_headers = response_headers;
     if(result.cookies)
     {
+        result.cookies->clear();
         curl_slist *cookies = nullptr;
-        curl_easy_getinfo(curl_handle, CURLINFO_COOKIELIST, &cookies);
-        if(cookies)
-        {
-            auto each = cookies;
-            while(each)
-            {
-                result.cookies->append(each->data);
-                *result.cookies += "\r\n";
-                each = each->next;
-            }
-        }
+        curl_easy_getinfo(handle, CURLINFO_COOKIELIST, &cookies);
+        for(auto *each = cookies; each; each = each->next) *result.cookies += std::string(each->data) + "\r\n";
         curl_slist_free_all(cookies);
     }
-
-    curl_easy_cleanup(curl_handle);
-
-    if(data && !argument.keep_resp_on_fail)
-    {
-        if(retVal != CURLE_OK || *result.status_code != 200)
-            data->clear();
-        data->shrink_to_fit();
-    }
-
-    return *result.status_code;
+    result.duration_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    result.bytes = body.size();
+    latest_fetch_error = result.error.empty() ? "" : "Download failed: " + result.error + " (" + safeSource(argument.url) + ")";
+    const nlohmann::json event = {{"phase", currentPhase()}, {"source", safeSource(argument.url)}, {"source_id", getMD5(argument.url)},
+        {"proxy", argument.proxy.empty() ? "direct" : safeSource(argument.proxy)},
+        {"http_status", code}, {"transport_code", result.transport_code}, {"success", result.success},
+        {"error", result.error}, {"duration_ms", result.duration_ms}, {"bytes", result.bytes}, {"attempts", tried}, {"cache", "network"}};
+    recordDownload(event);
+    writeLog(0, event.dump(), LOG_LEVEL_VERBOSE);
+    if(!latest_fetch_error.empty()) writeLog(0, latest_fetch_error, LOG_LEVEL_WARNING);
+    return transfer == CURLE_OK ? static_cast<int>(code) : 0;
 }
 
 // data:[<mediatype>][;base64],<data>
@@ -298,79 +352,116 @@ std::string buildSocks5ProxyString(const std::string &addr, int port, const std:
     return proxystr;
 }
 
-std::string webGet(const std::string &url, const std::string &proxy, unsigned int cache_ttl, std::string *response_headers, string_icase_map *request_headers)
+static bool readCache(const std::string &path, std::string &content, std::string &headers)
 {
-    int return_code = 0;
-    std::string content;
-
-    FetchArgument argument {HTTP_GET, url, proxy, nullptr, request_headers, nullptr, cache_ttl};
-    FetchResult fetch_res {&return_code, &content, response_headers, nullptr};
-
-    if (startsWith(url, "data:"))
-        return dataGet(url);
-    // cache system
-    if(cache_ttl > 0)
+    const auto packed = fileGet(path, true);
+    const auto line = packed.find('\n');
+    if(line == std::string::npos) return false;
+    try
     {
-        md("cache");
-        const std::string url_md5 = getMD5(url);
-        const std::string path = "cache/" + url_md5, path_header = path + "_header";
-        struct stat result {};
-        if(stat(path.data(), &result) == 0) // cache exist
-        {
-            time_t mtime = result.st_mtime, now = time(nullptr); // get cache modified time and current time
-            if(difftime(now, mtime) <= cache_ttl) // within TTL
-            {
-                writeLog(0, "CACHE HIT: '" + url + "', using local cache.");
-                //guarded_mutex guard(cache_rw_lock);
-                cache_rw_lock.readLock();
-                defer(cache_rw_lock.readUnlock();)
-                if(response_headers)
-                    *response_headers = fileGet(path_header, true);
-                return fileGet(path, true);
-            }
-            writeLog(0, "CACHE MISS: '" + url + "', TTL timeout, creating new cache."); // out of TTL
-        }
-        else
-            writeLog(0, "CACHE NOT EXIST: '" + url + "', creating new cache.");
-        //content = curlGet(url, proxy, response_headers, return_code); // try to fetch data
-        curlGet(argument, fetch_res);
-        if(return_code == 200) // success, save new cache
-        {
-            //guarded_mutex guard(cache_rw_lock);
-            cache_rw_lock.writeLock();
-            defer(cache_rw_lock.writeUnlock();)
-            fileWrite(path, content, true);
-            if(response_headers)
-                fileWrite(path_header, *response_headers, true);
-        }
-        else
-        {
-            if(fileExist(path) && global.serveCacheOnFetchFail) // failed, check if cache exist
-            {
-                writeLog(0, "Fetch failed. Serving cached content."); // cache exist, serving cache
-                //guarded_mutex guard(cache_rw_lock);
-                cache_rw_lock.readLock();
-                defer(cache_rw_lock.readUnlock();)
-                content = fileGet(path, true);
-                if(response_headers)
-                    *response_headers = fileGet(path_header, true);
-            }
-            else
-                writeLog(0, "Fetch failed. No local cache available."); // cache not exist or not allow to serve cache, serving nothing
-        }
+        const auto header_size = std::stoull(packed.substr(0, line));
+        if(header_size > packed.size() - line - 1) return false;
+        headers = packed.substr(line + 1, header_size);
+        content = packed.substr(line + 1 + header_size);
+        return !content.empty();
+    }
+    catch(const std::exception &) { return false; }
+}
+
+static void writeCache(const std::string &path, const std::string &body, const std::string &headers)
+{
+    static std::atomic<unsigned long long> sequence {0};
+    const auto temporary = path + ".tmp-" + std::to_string(getpid()) + "-" + std::to_string(++sequence);
+    const auto packed = std::to_string(headers.size()) + "\n" + headers + body;
+    std::lock_guard<std::mutex> lock(cache_rw_lock);
+    if(fileWrite(temporary, packed, true) != 0)
+    {
+        writeLog(0, "Cannot write download cache", LOG_LEVEL_WARNING);
+        std::remove(temporary.c_str());
+        return;
+    }
+    // POSIX rename replaces atomically. On Windows use the replacement API below.
+#ifdef _WIN32
+    if(!MoveFileExA(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        std::remove(temporary.c_str());
+#else
+    if(std::rename(temporary.c_str(), path.c_str()) != 0) std::remove(temporary.c_str());
+#endif
+}
+
+std::string webGet(const std::string &url, const std::string &proxy, unsigned int cache_ttl, std::string *response_headers, string_icase_map *request_headers, const std::function<bool(const std::string &)> &validate_content)
+{
+    latest_fetch_error.clear();
+    const auto valid = [&](const std::string &body) { return !validate_content || validate_content(body); };
+    if(startsWith(url, "data:"))
+    {
+        auto body = dataGet(url);
+        return valid(body) ? body : "";
+    }
+    const auto context = currentDiagnostics();
+    const bool force = context && context->force_refresh;
+    const bool stale = context && context->use_stale && currentPhase() == "rules_download";
+    int code = 0;
+    std::string content, headers;
+    FetchArgument argument {HTTP_GET, url, proxy, nullptr, request_headers, nullptr, cache_ttl, false, validate_content};
+    FetchResult result {&code, &content, &headers};
+    if(cache_ttl == 0)
+    {
+        curlGet(argument, result);
+        if(response_headers) *response_headers = headers;
         return content;
     }
-    //return curlGet(url, proxy, response_headers, return_code);
-    curlGet(argument, fetch_res);
+    md("cache");
+    const auto key = fetchCacheKey(url, proxy, request_headers);
+    const auto path = "cache/v2-" + key;
+    auto flight = cacheFlight(key);
+    const auto generation = flight->generation.load();
+    std::unique_lock<std::mutex> lock(flight->mutex);
+    const auto cached = [&](const std::string &state, const std::string &body, const std::string &response) {
+        if(response_headers) *response_headers = response;
+        recordDownload({{"phase", currentPhase()}, {"source", safeSource(url)}, {"source_id", getMD5(url)},
+            {"http_status", 200}, {"success", true}, {"bytes", body.size()}, {"duration_ms", 0}, {"cache", state}});
+        return body;
+    };
+    if(flight->generation.load() != generation)
+    {
+        latest_fetch_error = flight->error;
+        if(flight->success && valid(flight->content)) return cached("shared", flight->content, flight->headers);
+        recordDownload({{"phase", currentPhase()}, {"source", safeSource(url)}, {"source_id", getMD5(url)},
+            {"http_status", flight->status_code}, {"transport_code", flight->transport_code},
+            {"success", false}, {"error", flight->error}, {"bytes", 0}, {"duration_ms", 0}, {"cache", "shared"}});
+        if(stale && readCache(path, content, headers) && valid(content)) return cached("stale", content, headers);
+        return "";
+    }
+    struct stat info {};
+    if((!force || stale) && stat(path.c_str(), &info) == 0 && (stale || difftime(time(nullptr), info.st_mtime) <= cache_ttl) && readCache(path, content, headers) && valid(content))
+        return cached(stale ? "stale" : "hit", content, headers);
+    curlGet(argument, result);
+    flight->status_code = code;
+    flight->transport_code = result.transport_code;
+    if(result.success && !content.empty())
+    {
+        writeCache(path, content, headers);
+        flight->success = true; flight->content = content; flight->headers = headers; flight->error.clear();
+    }
+    else
+    {
+        if(latest_fetch_error.empty()) latest_fetch_error = "Download returned empty content (" + safeSource(url) + ")";
+        flight->success = false; flight->error = latest_fetch_error;
+        // Required rules only fall back when explicitly requested, regardless of legacy defaults.
+        if((stale || (!context && global.serveCacheOnFetchFail)) && readCache(path, content, headers) && valid(content))
+            content = cached("stale", content, headers);
+        else content.clear();
+    }
+    ++flight->generation;
+    if(response_headers) *response_headers = headers;
     return content;
 }
 
 void flushCache()
 {
-    //guarded_mutex guard(cache_rw_lock);
-    cache_rw_lock.writeLock();
-    defer(cache_rw_lock.writeUnlock();)
-    operateFiles("cache", [](const std::string &file){ remove(("cache/" + file).data()); return 0; });
+    std::lock_guard<std::mutex> lock(cache_rw_lock);
+    operateFiles("cache", [](const std::string &file){ std::remove(("cache/" + file).c_str()); return 0; });
 }
 
 int webPost(const std::string &url, const std::string &data, const std::string &proxy, const string_icase_map &request_headers, std::string *retData)

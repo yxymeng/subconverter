@@ -138,9 +138,9 @@ tasks:
 #    timeout: 3
 
 server:
-  listen: 0.0.0.0
+  listen: 127.0.0.1
   port: 25500
-  serve_file_root: ""
+  serve_file_root: "web"
 
 advanced:
   log_level: info
@@ -150,10 +150,16 @@ advanced:
   max_allowed_rulesets: 0
   max_allowed_rules: 0
   max_allowed_download_size: 0
-  enable_cache: false
+  enable_cache: true
   cache_subscription: 60
   cache_config: 300
   cache_ruleset: 21600
   script_clean_context: true
-  async_fetch_ruleset: false
+  async_fetch_ruleset: true
   skip_failed_links: false
+
+  max_parallel_downloads: 4
+  download_timeout: 15
+  connect_timeout: 5
+  serve_cache_on_fetch_fail: false
+  subscription_source_headers: '{}'

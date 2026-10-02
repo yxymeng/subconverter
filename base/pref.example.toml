@@ -327,13 +327,13 @@ target = "/render?path=templates/test.tpl"
 #timeout = 3
 
 [server]
-listen = "0.0.0.0"
+listen = "127.0.0.1"
 port = 25500
 serve_file_root = "web"
 
 [advanced]
 log_level = "debug"
-print_debug_info = true
+print_debug_info = false
 max_pending_connections = 10240
 max_concurrent_threads = 4
 max_allowed_rulesets = 64
@@ -344,5 +344,13 @@ cache_subscription = 60
 cache_config = 300
 cache_ruleset = 21600
 script_clean_context = true
-async_fetch_ruleset = false
+async_fetch_ruleset = true
 skip_failed_links = true
+
+# Bounded downloads. Cached rules are refreshed synchronously on expiry.
+max_parallel_downloads = 4
+download_timeout = 15
+connect_timeout = 5
+serve_cache_on_fetch_fail = false
+# Explicit headers per source origin, never inherited from the incoming request.
+subscription_source_headers = '{}'

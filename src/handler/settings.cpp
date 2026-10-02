@@ -1,6 +1,8 @@
 #include <string>
 #include <mutex>
+#include <atomic>
 #include <toml.hpp>
+#include "handler/diagnostics.h"
 
 #include "config/binding.h"
 #include "handler/webget.h"
@@ -11,6 +13,40 @@
 #include "interfaces.h"
 #include "multithread.h"
 #include "settings.h"
+
+static std::shared_ptr<const DownloadSettings> active_download_settings = std::make_shared<DownloadSettings>();
+std::shared_ptr<const DownloadSettings> downloadSettings() { return std::atomic_load(&active_download_settings); }
+
+static bool applyDownloadSettings()
+{
+    global.downloadTimeout = std::clamp(global.downloadTimeout, 1, 300);
+    global.connectTimeout = std::clamp(global.connectTimeout, 1, global.downloadTimeout);
+    global.maxParallelDownloads = std::clamp(global.maxParallelDownloads, 1, 32);
+    auto settings = std::make_shared<DownloadSettings>();
+    settings->downloadTimeout = global.downloadTimeout;
+    settings->connectTimeout = global.connectTimeout;
+    settings->maxParallelDownloads = global.maxParallelDownloads;
+    try
+    {
+        const auto headers = nlohmann::json::parse(global.subscriptionHeadersConfig);
+        if(!headers.is_object()) throw std::invalid_argument("headers must be an object");
+        for(auto it = headers.begin(); it != headers.end(); ++it)
+        {
+            auto origin = sourceOrigin(it.key());
+            if(origin.empty() || !it.value().is_object()) throw std::invalid_argument("invalid origin or headers");
+            for(auto header = it.value().begin(); header != it.value().end(); ++header)
+            {
+                const auto value = header.value().get<std::string>();
+                if(header.key().find_first_of("\r\n:") != std::string::npos || value.find_first_of("\r\n") != std::string::npos)
+                    throw std::invalid_argument("invalid header");
+                settings->subscriptionHeaders[origin][header.key()] = value;
+            }
+        }
+    }
+    catch(const std::exception &) { writeLog(0, "Invalid subscription_source_headers: expected an origin-to-headers JSON object", LOG_LEVEL_ERROR); return false; }
+    std::atomic_store(&active_download_settings, std::shared_ptr<const DownloadSettings>(settings));
+    return true;
+}
 
 //multi-thread lock
 std::mutex gMutexConfigure;
@@ -261,7 +297,7 @@ void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &
         if(pos != std::string::npos)
         {
             writeLog(0, "Adding rule '" + rule_url.substr(pos + 2) + "," + rule_group + "'.", LOG_LEVEL_INFO);
-            rc = {rule_group, "", "", RULESET_SURGE, std::async(std::launch::async, [=](){return rule_url.substr(pos);}), 0};
+            rc = {rule_group, "", "", RULESET_SURGE, std::async(std::launch::deferred, [=](){return rule_url.substr(pos);}), 0};
         }
         else
         {
@@ -274,7 +310,8 @@ void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &
                 type = iter->second;
             }
             writeLog(0, "Updating ruleset url '" + rule_url + "' with group '" + rule_group + "'.", LOG_LEVEL_INFO);
-            rc = {rule_group, rule_url, rule_url_typed, type, fetchFileAsync(rule_url, proxy, global.cacheRuleset, true, global.asyncFetchRuleset), x.Interval};
+            rc = {rule_group, rule_url, rule_url_typed, type, fetchFileAsync(rule_url, proxy, global.cacheRuleset, true, global.asyncFetchRuleset,
+                [type](const std::string &content) { return validRuleset(content, type); }), x.Interval};
         }
         ruleset_content_array.emplace_back(std::move(rc));
     }
@@ -561,8 +598,13 @@ void readYAMLConf(YAML::Node &node)
         }
         node["advanced"]["script_clean_context"] >> global.scriptCleanContext;
         node["advanced"]["async_fetch_ruleset"] >> global.asyncFetchRuleset;
+        node["advanced"]["download_timeout"] >> global.downloadTimeout;
+        node["advanced"]["connect_timeout"] >> global.connectTimeout;
+        node["advanced"]["max_parallel_downloads"] >> global.maxParallelDownloads;
+        node["advanced"]["subscription_source_headers"] >> global.subscriptionHeadersConfig;
         node["advanced"]["skip_failed_links"] >> global.skipFailedLinks;
     }
+    global.configurationLoaded = applyDownloadSettings();
     writeLog(0, "Load preference settings in YAML format completed.", LOG_LEVEL_INFO);
 }
 
@@ -626,7 +668,7 @@ void readTOMLConf(toml::value &root)
     safe_set_streams(toml::find_or<RegexMatchConfigs>(root, "userinfo", "stream_rule", RegexMatchConfigs{}));
     safe_set_times(toml::find_or<RegexMatchConfigs>(root, "userinfo", "time_rule", RegexMatchConfigs{}));
 
-    auto section_node_pref = toml::find(root, "node_pref");
+    auto section_node_pref = toml::find_or(root, "node_pref", toml::value(toml::table{}));
 
     find_if_exist(section_node_pref,
                   "udp_flag", global.UDPFlag,
@@ -647,7 +689,7 @@ void readTOMLConf(toml::value &root)
     importItems(renameconfs, "rename_node", false);
     safe_set_renames(toml::get<RegexMatchConfigs>(toml::value(renameconfs)));
 
-    auto section_managed = toml::find(root, "managed_config");
+    auto section_managed = toml::find_or(root, "managed_config", toml::value(toml::table{}));
 
     find_if_exist(section_managed,
                   "write_managed_config", global.writeManagedConfig,
@@ -657,13 +699,13 @@ void readTOMLConf(toml::value &root)
                   "quanx_device_id", global.quanXDevID
     );
 
-    auto section_surge_external = toml::find(root, "surge_external_proxy");
+    auto section_surge_external = toml::find_or(root, "surge_external_proxy", toml::value(toml::table{}));
     find_if_exist(section_surge_external,
                   "surge_ssr_path", global.surgeSSRPath,
                   "resolve_hostname", global.surgeResolveHostname
     );
 
-    auto section_emojis = toml::find(root, "emojis");
+    auto section_emojis = toml::find_or(root, "emojis", toml::value(toml::table{}));
 
     find_if_exist(section_emojis,
                   "add_emoji", global.addEmoji,
@@ -678,7 +720,7 @@ void readTOMLConf(toml::value &root)
     importItems(groups, "custom_groups", false);
     global.customProxyGroups = toml::get<ProxyGroupConfigs>(toml::value(groups));
 
-    auto section_ruleset = toml::find(root, "ruleset");
+    auto section_ruleset = toml::find_or(root, "ruleset", toml::value(toml::table{}));
 
     find_if_exist(section_ruleset,
                   "enabled", global.enableRuleGen,
@@ -690,7 +732,7 @@ void readTOMLConf(toml::value &root)
     importItems(rulesets, "rulesets", false);
     global.customRulesets = toml::get<RulesetConfigs>(toml::value(rulesets));
 
-    auto section_template = toml::find(root, "template");
+    auto section_template = toml::find_or(root, "template", toml::value(toml::table{}));
 
     global.templatePath = toml::find_or(section_template, "template_path", "template");
 
@@ -711,7 +753,7 @@ void readTOMLConf(toml::value &root)
     global.cronTasks = toml::get<CronTaskConfigs>(toml::value(tasks));
     refresh_schedule();
 
-    auto section_server = toml::find(root, "server");
+    auto section_server = toml::find_or(root, "server", toml::value(toml::table{}));
 
     find_if_exist(section_server,
                   "listen", global.listenAddress,
@@ -720,7 +762,7 @@ void readTOMLConf(toml::value &root)
     );
     webServer.serve_file = !webServer.serve_file_root.empty();
 
-    auto section_advanced = toml::find(root, "advanced");
+    auto section_advanced = toml::find_or(root, "advanced", toml::value(toml::table{}));
 
     std::string log_level;
     bool enable_cache = true;
@@ -740,6 +782,11 @@ void readTOMLConf(toml::value &root)
                   "cache_ruleset", cache_ruleset,
                   "script_clean_context", global.scriptCleanContext,
                   "async_fetch_ruleset", global.asyncFetchRuleset,
+                  "serve_cache_on_fetch_fail", global.serveCacheOnFetchFail,
+                  "download_timeout", global.downloadTimeout,
+                  "connect_timeout", global.connectTimeout,
+                  "max_parallel_downloads", global.maxParallelDownloads,
+                  "subscription_source_headers", global.subscriptionHeadersConfig,
                   "skip_failed_links", global.skipFailedLinks
     );
 
@@ -780,11 +827,13 @@ void readTOMLConf(toml::value &root)
         global.cacheSubscription = global.cacheConfig = global.cacheRuleset = 0;
     }
 
+    global.configurationLoaded = applyDownloadSettings();
     writeLog(0, "Load preference settings in TOML format completed.", LOG_LEVEL_INFO);
 }
 
 void readConf()
 {
+    global.configurationLoaded = false;
     guarded_mutex guard(gMutexConfigure);
     writeLog(0, "Loading preference settings...", LOG_LEVEL_INFO);
 
@@ -796,6 +845,7 @@ void readConf()
     try
     {
         std::string prefdata = fileGet(global.prefPath, false);
+        if(prefdata.empty()) { writeLog(0, "Preference file is missing or empty", LOG_LEVEL_FATAL); return; }
         if(prefdata.find("common:") != std::string::npos)
         {
             YAML::Node yaml = YAML::Load(prefdata);
@@ -809,16 +859,27 @@ void readConf()
     catch (YAML::Exception &e)
     {
         //ignore yaml parse error
-        writeLog(0, e.what(), LOG_LEVEL_DEBUG);
+        writeLog(0, "Invalid preference syntax (details omitted to protect credentials)", LOG_LEVEL_DEBUG);
         writeLog(0, "Unable to load preference settings as YAML.", LOG_LEVEL_DEBUG);
     }
     catch (toml::exception &e)
     {
         //ignore toml parse error
-        writeLog(0, e.what(), LOG_LEVEL_DEBUG);
+        writeLog(0, "Invalid preference syntax (details omitted to protect credentials)", LOG_LEVEL_DEBUG);
         writeLog(0, "Unable to load preference settings as TOML.", LOG_LEVEL_DEBUG);
     }
 
+    catch (const std::exception &)
+    {
+        writeLog(0, "Invalid preference value or missing required section", LOG_LEVEL_FATAL);
+        return;
+    }
+
+    if(endsWith(global.prefPath, ".toml") || endsWith(global.prefPath, ".yml") || endsWith(global.prefPath, ".yaml"))
+    {
+        writeLog(0, "Invalid preference syntax or missing common section", LOG_LEVEL_FATAL);
+        return;
+    }
     INIReader ini;
     ini.allow_dup_section_titles = true;
     //ini.do_utf8_to_gbk = true;
@@ -1069,8 +1130,13 @@ void readConf()
     }
     ini.get_bool_if_exist("script_clean_context", global.scriptCleanContext);
     ini.get_bool_if_exist("async_fetch_ruleset", global.asyncFetchRuleset);
+    ini.get_int_if_exist("download_timeout", global.downloadTimeout);
+    ini.get_int_if_exist("connect_timeout", global.connectTimeout);
+    ini.get_int_if_exist("max_parallel_downloads", global.maxParallelDownloads);
+    ini.get_if_exist("subscription_source_headers", global.subscriptionHeadersConfig);
     ini.get_bool_if_exist("skip_failed_links", global.skipFailedLinks);
 
+    global.configurationLoaded = applyDownloadSettings();
     writeLog(0, "Load preference settings in INI format completed.", LOG_LEVEL_INFO);
 }
 
@@ -1204,6 +1270,7 @@ int loadExternalTOML(toml::value &root, ExternalConfig &ext)
 int loadExternalConfig(std::string &path, ExternalConfig &ext)
 {
     std::string base_content, proxy = parseProxy(global.proxyConfig), config = fetchFile(path, proxy, global.cacheConfig);
+    if(config.empty()) return -1;
     if(render_template(config, *ext.tpl_args, base_content, global.templatePath) != 0)
         base_content = config;
 
@@ -1235,6 +1302,7 @@ int loadExternalConfig(std::string &path, ExternalConfig &ext)
         return -1;
     }
 
+    if(!ini.section_exist("custom")) return -1;
     ini.enter_section("custom");
     if(ini.item_prefix_exist("custom_proxy_group"))
     {

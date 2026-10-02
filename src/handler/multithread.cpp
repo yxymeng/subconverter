@@ -1,5 +1,9 @@
 #include <future>
 #include <thread>
+#include <queue>
+#include <functional>
+#include <condition_variable>
+#include "handler/diagnostics.h"
 
 #include "handler/settings.h"
 #include "utils/network.h"
@@ -58,20 +62,66 @@ void safe_set_times(RegexMatchConfigs data)
     global.timeNodeRules.swap(data);
 }
 
-std::shared_future<std::string> fetchFileAsync(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local, bool async)
+namespace {
+class FetchExecutor
 {
-    std::shared_future<std::string> retVal;
-    /*if(vfs::vfs_exist(path))
-        retVal = std::async(std::launch::async, [path](){return vfs::vfs_get(path);});
-    else */if(find_local && fileExist(path, true))
-        retVal = std::async(std::launch::async, [path](){return fileGet(path, true);});
-    else if(isLink(path))
-        retVal = std::async(std::launch::async, [path, proxy, cache_ttl](){return webGet(path, proxy, cache_ttl);});
-    else
-        return std::async(std::launch::async, [](){return std::string();});
-    if(!async)
-        retVal.wait();
-    return retVal;
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::queue<std::function<void()>> tasks;
+    std::vector<std::thread> workers;
+    bool stopping = false;
+public:
+    FetchExecutor()
+    {
+        for(int i = 0; i < downloadSettings()->maxParallelDownloads; ++i)
+            workers.emplace_back([this] {
+                while(true)
+                {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex);
+                        ready.wait(lock, [this] { return stopping || !tasks.empty(); });
+                        if(stopping && tasks.empty()) return;
+                        task = std::move(tasks.front()); tasks.pop();
+                    }
+                    task();
+                }
+            });
+    }
+    ~FetchExecutor()
+    {
+        { std::lock_guard<std::mutex> lock(mutex); stopping = true; }
+        ready.notify_all();
+        for(auto &worker : workers) worker.join();
+    }
+    std::shared_future<std::string> submit(std::function<std::string()> fn)
+    {
+        auto task = std::make_shared<std::packaged_task<std::string()>>(std::move(fn));
+        auto result = task->get_future().share();
+        { std::lock_guard<std::mutex> lock(mutex); tasks.emplace([task] { (*task)(); }); }
+        ready.notify_one();
+        return result;
+    }
+};
+}
+
+std::shared_future<std::string> fetchFileAsync(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local, bool async, std::function<bool(const std::string &)> validate_content)
+{
+    static FetchExecutor executor;
+    auto context = currentDiagnostics();
+    auto phase = currentPhase();
+    auto result = executor.submit([path, proxy, cache_ttl, find_local, context, phase, validate_content] {
+        DiagnosticScope scope(context, phase);
+        if(find_local && fileExist(path, true))
+        {
+            auto content = fileGet(path, true);
+            return !validate_content || validate_content(content) ? content : std::string();
+        }
+        if(isLink(path)) return webGet(path, proxy, cache_ttl, nullptr, nullptr, validate_content);
+        return std::string();
+    });
+    if(!async) result.wait();
+    return result;
 }
 
 std::string fetchFile(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local)

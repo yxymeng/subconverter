@@ -1,0 +1,1441 @@
+{
+  "environment": "Linux; local HTTP, 50ms fixed latency per ruleset; one synthetic Trojan node",
+  "corpus": [
+    {
+      "url": "https://raw.githubusercontent.com/yxymeng/yxymeng.github.io/master/Ruleset/Direct_personal.list",
+      "bytes": 9005,
+      "kind": "actual public corpus",
+      "sha256": "4961158734c31b3bb4e1af210a5786549a14f60ab5b2200058ae22ce15ab35e7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/yxymeng/yxymeng.github.io/master/Ruleset/Proxy_personal.list",
+      "bytes": 2709,
+      "kind": "actual public corpus",
+      "sha256": "87577d1650732edcd3fb369038e135c9dacdc9f647f2c7b532c91c5b654719a0"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/yxymeng/yxymeng.github.io/master/Ruleset/Japan_personal.list",
+      "bytes": 611,
+      "kind": "actual public corpus",
+      "sha256": "48fec4c5ad43c4e5536f334bb59fe6711a829948f4f655ea70924b681227efeb"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/yxymeng/yxymeng.github.io/master/Ruleset/America_personal.list",
+      "bytes": 1553,
+      "kind": "actual public corpus",
+      "sha256": "257b27ee9e254759cec4eab44adcf623211a031dbe6bbf45a01d667feeff53c1"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/OpenAi.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/Ruleset/AI.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Bing/Bing.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/UnBan.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/yxymeng/yxymeng.github.io/refs/heads/master/Ruleset/Merged/ads.list",
+      "bytes": 2949074,
+      "kind": "actual public corpus",
+      "sha256": "04f73ba5886ee2200bea0fdea7bcbc05236183f3a5b304ed46db77f56840b11d"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/yxymeng/yxymeng.github.io/master/Ruleset/Steam_personal.list",
+      "bytes": 793,
+      "kind": "actual public corpus",
+      "sha256": "c4f3fb5cf9e94c68ef2efbd079cc69f9b63527c18b3a6ce56b73fb2384702b8d"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/SteamCN.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Xbox.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Nintendo.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Origin.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Sony.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Epic.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyMedia.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/EHGallery.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Scholar.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyGFWlist.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/yxymeng/yxymeng.github.io/refs/heads/master/Ruleset/Merged/Chinaip.list",
+      "bytes": 593848,
+      "kind": "actual public corpus",
+      "sha256": "0956d516472b297f30d8f4054a6f7809e8190e515167a361c7f0b7e5dffe288d"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Adobe.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Google.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/OneDrive.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Microsoft.list",
+      "bytes": 30,
+      "kind": "external source substituted",
+      "sha256": "6eab0a5b764d9e1d554934221eccdda03ec2c6d2c559da2559bed16e327ff6d7"
+    }
+  ],
+  "rules_repo_commit": "7c81930c5bbd4ec84c0e66cdf341fd7e0f7aa41e",
+  "output_identical": true,
+  "runs": [
+    {
+      "async": false,
+      "repetition": 0,
+      "state": "cold",
+      "wall_ms": 1426.4577020003344,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 100.0,
+      "peak_rss_kib": 37844,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 3.305019,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1292.711758,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.109125,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.140882,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 48.149694,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 50.609426,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1349.40375,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 0,
+      "state": "valid",
+      "wall_ms": 121.71892900005332,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 70.0,
+      "peak_rss_kib": 61524,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.029234,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 4.75926,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 0.019679,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.092509,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 36.083229,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 37.800912,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 44.808216,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 0,
+      "network_bytes": 0,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 0,
+      "state": "expired",
+      "wall_ms": 1622.0543750005163,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 68756,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.908914,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1522.435214,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.317637,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.118658,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 34.374737,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 35.281147,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1562.166038,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 0,
+      "state": "forced",
+      "wall_ms": 1876.7518420008855,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 70.0,
+      "peak_rss_kib": 79676,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.880772,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1785.406404,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.538674,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.115444,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 34.36356,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 35.213606,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1825.373606,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 1,
+      "state": "cold",
+      "wall_ms": 1362.4429009996675,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 80.0,
+      "peak_rss_kib": 38836,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 3.179611,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1279.592365,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.141753,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.143215,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 34.225613,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 35.208368,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1320.538672,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 1,
+      "state": "valid",
+      "wall_ms": 95.2822750004998,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 69.99999999999999,
+      "peak_rss_kib": 61008,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.056275,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 5.376157,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 0.020291,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.096355,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 36.878493,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 37.740146,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 45.184086,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 0,
+      "network_bytes": 0,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 1,
+      "state": "expired",
+      "wall_ms": 1371.5071320002608,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 70.0,
+      "peak_rss_kib": 69656,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.891257,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1278.143761,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 0.989725,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.112729,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 38.718955,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 39.727389,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1321.77693,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 1,
+      "state": "forced",
+      "wall_ms": 1376.4003529995534,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 84640,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.550897,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1281.158115,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.140942,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.114632,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 36.187,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 37.126249,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1322.218257,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 2,
+      "state": "cold",
+      "wall_ms": 1373.0835439982911,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 80.0,
+      "peak_rss_kib": 33344,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 3.3391,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1284.627523,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.274963,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.183565,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 33.245743,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 34.097651,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1324.694571,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 2,
+      "state": "valid",
+      "wall_ms": 90.58183200068015,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 60.000000000000014,
+      "peak_rss_kib": 58916,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.141202,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 3.714823,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 0.018618,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.096185,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 32.996118,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 33.797791,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 40.102211,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 0,
+      "network_bytes": 0,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 2,
+      "state": "expired",
+      "wall_ms": 1359.853211999507,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 67444,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.605449,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1280.860569,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.270826,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.117276,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 31.786123,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 32.588356,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1317.354827,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": false,
+      "repetition": 2,
+      "state": "forced",
+      "wall_ms": 1360.8689150005375,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 69.99999999999999,
+      "peak_rss_kib": 80076,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.605079,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 1277.662345,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.30649,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.19965,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 33.154816,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 33.959814,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 1315.617204,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 0,
+      "state": "cold",
+      "wall_ms": 653.9927620015078,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 80.0,
+      "peak_rss_kib": 39116,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 2.991949,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 555.882919,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.146,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.148032,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 34.772273,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 35.60284,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 596.971761,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 0,
+      "state": "valid",
+      "wall_ms": 89.95665300062683,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 50.0,
+      "peak_rss_kib": 55920,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.060491,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 2.230086,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 0.020601,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.114012,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 36.647567,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 37.439325,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 41.786287,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 0,
+      "network_bytes": 0,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 0,
+      "state": "expired",
+      "wall_ms": 643.894740000178,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 67548,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.531919,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 557.505103,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.631378,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.114101,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 32.876238,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 33.711602,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 595.509256,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 0,
+      "state": "forced",
+      "wall_ms": 646.2613439998677,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 70.00000000000003,
+      "peak_rss_kib": 78032,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.473301,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 558.437615,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.234682,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.183605,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 37.610752,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 38.354979,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 600.766107,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 1,
+      "state": "cold",
+      "wall_ms": 638.6894429997483,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 80.0,
+      "peak_rss_kib": 39056,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 3.010016,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 553.795376,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.152329,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.163906,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 34.945422,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 35.864742,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 595.206801,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 1,
+      "state": "valid",
+      "wall_ms": 93.68897799868137,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 60.000000000000014,
+      "peak_rss_kib": 58456,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.110156,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 2.121443,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 0.02033,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.091657,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 34.788407,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 35.547657,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 39.798806,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 0,
+      "network_bytes": 0,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 1,
+      "state": "expired",
+      "wall_ms": 642.9255139992165,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 69.99999999999999,
+      "peak_rss_kib": 68856,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.421082,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 556.887389,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.324857,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.116856,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 33.836028,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 34.610471,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 595.33704,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 1,
+      "state": "forced",
+      "wall_ms": 655.6963559996802,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 90.0,
+      "peak_rss_kib": 84180,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.734453,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 557.562182,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.225514,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.124106,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 37.985614,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 38.833847,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 600.49261,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 2,
+      "state": "cold",
+      "wall_ms": 640.2553240004636,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 80.0,
+      "peak_rss_kib": 33376,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 3.190777,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 553.625001,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.216045,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.14656,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 32.513464,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 33.326614,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 592.711057,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 2,
+      "state": "valid",
+      "wall_ms": 91.30893300061871,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 60.000000000000014,
+      "peak_rss_kib": 56204,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.141883,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 2.908313,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 0.02038,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.095142,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 37.126055,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 38.572255,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 43.646057,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 0,
+      "network_bytes": 0,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 2,
+      "state": "expired",
+      "wall_ms": 641.7068570008269,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 69428,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.510567,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 553.663279,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 1.291828,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.112969,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 36.902239,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 37.734558,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 595.250988,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    },
+    {
+      "async": true,
+      "repetition": 2,
+      "state": "forced",
+      "wall_ms": 640.6452530009119,
+      "metrics": {
+        "nodes_parsed": 1,
+        "output_bytes": 5406928,
+        "rules_processed": 104861
+      },
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 82480,
+      "peak_threads": 14,
+      "phases": [
+        {
+          "duration_ms": 1.870537,
+          "phase": "external_config"
+        },
+        {
+          "duration_ms": 557.427041,
+          "phase": "rules_download"
+        },
+        {
+          "duration_ms": 0.950416,
+          "phase": "subscription_download"
+        },
+        {
+          "duration_ms": 0.141933,
+          "phase": "subscription_parse"
+        },
+        {
+          "duration_ms": 35.042889,
+          "phase": "rules_processing"
+        },
+        {
+          "duration_ms": 35.813786,
+          "phase": "export"
+        },
+        {
+          "duration_ms": 597.523291,
+          "phase": "total"
+        }
+      ],
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "output_bytes": 5406928,
+      "output_sha256": "d4bc910db06e78b36cf4ce64dda1c7a0551405a29d7236130592bd36cb5b1e2f"
+    }
+  ],
+  "medians": [
+    {
+      "async": false,
+      "state": "cold",
+      "wall_ms": 1373.0835439982911,
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "cpu_ms": 80.0,
+      "peak_rss_kib": 38836,
+      "peak_threads": 14,
+      "phases_ms": {
+        "rules_download": 1284.627523,
+        "rules_processing": 34.225613,
+        "export": 35.208368,
+        "total": 1324.694571
+      }
+    },
+    {
+      "async": false,
+      "state": "valid",
+      "wall_ms": 95.2822750004998,
+      "network_requests": 0,
+      "network_bytes": 0,
+      "cpu_ms": 69.99999999999999,
+      "peak_rss_kib": 61524,
+      "peak_threads": 14,
+      "phases_ms": {
+        "rules_download": 4.75926,
+        "rules_processing": 36.083229,
+        "export": 37.740146,
+        "total": 44.808216
+      }
+    },
+    {
+      "async": false,
+      "state": "expired",
+      "wall_ms": 1371.5071320002608,
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 69656,
+      "peak_threads": 14,
+      "phases_ms": {
+        "rules_download": 1280.860569,
+        "rules_processing": 34.374737,
+        "export": 35.281147,
+        "total": 1321.77693
+      }
+    },
+    {
+      "async": false,
+      "state": "forced",
+      "wall_ms": 1376.4003529995534,
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "cpu_ms": 70.0,
+      "peak_rss_kib": 84640,
+      "peak_threads": 14,
+      "phases_ms": {
+        "rules_download": 1281.158115,
+        "rules_processing": 34.36356,
+        "export": 35.213606,
+        "total": 1322.218257
+      }
+    },
+    {
+      "async": true,
+      "state": "cold",
+      "wall_ms": 640.2553240004636,
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "cpu_ms": 80.0,
+      "peak_rss_kib": 39116,
+      "peak_threads": 14,
+      "phases_ms": {
+        "rules_download": 553.795376,
+        "rules_processing": 34.772273,
+        "export": 35.60284,
+        "total": 595.206801
+      }
+    },
+    {
+      "async": true,
+      "state": "valid",
+      "wall_ms": 91.30893300061871,
+      "network_requests": 0,
+      "network_bytes": 0,
+      "cpu_ms": 60.000000000000014,
+      "peak_rss_kib": 58456,
+      "peak_threads": 14,
+      "phases_ms": {
+        "rules_download": 2.230086,
+        "rules_processing": 36.647567,
+        "export": 37.439325,
+        "total": 41.786287
+      }
+    },
+    {
+      "async": true,
+      "state": "expired",
+      "wall_ms": 642.9255139992165,
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 69428,
+      "peak_threads": 14,
+      "phases_ms": {
+        "rules_download": 556.887389,
+        "rules_processing": 33.836028,
+        "export": 34.610471,
+        "total": 595.33704
+      }
+    },
+    {
+      "async": true,
+      "state": "forced",
+      "wall_ms": 646.2613439998677,
+      "network_requests": 27,
+      "network_bytes": 3560276,
+      "cpu_ms": 79.99999999999999,
+      "peak_rss_kib": 84180,
+      "peak_threads": 14,
+      "phases_ms": {
+        "rules_download": 557.562182,
+        "rules_processing": 37.610752,
+        "export": 38.354979,
+        "total": 600.49261
+      }
+    }
+  ]
+}

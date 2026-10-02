@@ -104,7 +104,8 @@ int fileWrite(const std::string &path, const std::string &content, bool overwrit
     */
     const char *mode = overwrite ? "wb" : "ab";
     std::FILE *fp = std::fopen(path.c_str(), mode);
-    std::fwrite(content.c_str(), 1, content.size(), fp);
-    std::fclose(fp);
-    return 0;
+    if(!fp) return -1;
+    const bool complete = std::fwrite(content.c_str(), 1, content.size(), fp) == content.size();
+    const int closed = std::fclose(fp);
+    return complete && closed == 0 ? 0 : -1;
 }

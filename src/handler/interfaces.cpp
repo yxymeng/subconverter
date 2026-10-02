@@ -28,6 +28,7 @@
 #include "settings.h"
 #include "upload.h"
 #include "webget.h"
+#include "diagnostics.h"
 
 extern WebServer webServer;
 
@@ -40,6 +41,8 @@ std::string parseProxy(const std::string &source)
         proxy = getSystemProxy();
     else if(source == "NONE")
         proxy = "";
+    if(!proxy.empty() && proxy.find("://") == std::string::npos && !startsWith(proxy, "cors:"))
+        proxy = "http://" + proxy;
     return proxy;
 }
 
@@ -447,6 +450,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
     {
         //std::cerr<<"External configuration file provided. Loading...\n";
         writeLog(0, "External configuration file provided. Loading...", LOG_LEVEL_INFO);
+        PhaseTimer configuration_timer("external_config");
         ExternalConfig extconf;
         extconf.tpl_args = &tpl_args;
         if(loadExternalConfig(argExternalConfig, extconf) == 0)
@@ -484,6 +488,11 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
             argAddEmoji.define(extconf.add_emoji);
             argRemoveEmoji.define(extconf.remove_old_emoji);
         }
+        else
+        {
+            *status_code = 502;
+            return "External configuration could not be downloaded or parsed (" + safeSource(argExternalConfig) + ")";
+        }
     }
     else
     {
@@ -506,14 +515,15 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
     }
     if(ext.enable_rule_generator && !ext.nodelist && !lSimpleSubscription)
     {
-        if(lCustomRulesets != global.customRulesets)
-            refreshRulesets(lCustomRulesets, lRulesetContent);
-        else
-        {
-            if(global.updateRulesetOnRequest)
-                refreshRulesets(global.customRulesets, global.rulesetsContent);
-            lRulesetContent = global.rulesetsContent;
-        }
+        PhaseTimer rules_timer("rules_download");
+        // Re-evaluate TTL on every conversion instead of retaining startup futures forever.
+        refreshRulesets(lCustomRulesets, lRulesetContent);
+        std::string unavailable;
+        for(auto &ruleset : lRulesetContent)
+            if(ruleset.rule_content.get().empty()) unavailable += safeSource(ruleset.rule_path) + " ";
+        if(!unavailable.empty())
+            throw std::runtime_error("Required ruleset unavailable: " + unavailable +
+                ". Previous successful cache is preserved; retry with use_stale=true to explicitly use it.");
     }
 
     if(!argEmoji.is_undef())
@@ -627,11 +637,15 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
             if(addNodes(x, insert_nodes, groupID, parse_set) == -1)
             {
                 if(global.skipFailedLinks)
-                    writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
+                {
+                    const auto error = parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
+                    recordWarning(error);
+                    writeLog(0, error, LOG_LEVEL_WARNING);
+                }
                 else
                 {
                     *status_code = 400;
-                    return "The following link doesn't contain any valid node info: " + x;
+                    return parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
                 }
             }
             groupID--;
@@ -650,11 +664,15 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
         if(addNodes(x, nodes, groupID, parse_set) == -1)
         {
             if(global.skipFailedLinks)
-                writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
+            {
+                const auto error = parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
+                recordWarning(error);
+                writeLog(0, error, LOG_LEVEL_WARNING);
+            }
             else
             {
                 *status_code = 400;
-                return "The following link doesn't contain any valid node info: " + x;
+                return parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
             }
         }
         groupID++;
@@ -663,7 +681,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
     if(nodes.empty() && insert_nodes.empty())
     {
         *status_code = 400;
-        return "No nodes were found!";
+        return parse_set.error.empty() ? "No nodes remain after parsing and filtering" : parse_set.error;
     }
     if(!subInfo.empty() && argAppendUserinfo.get(global.appendUserinfo))
         response.headers.emplace("Subscription-UserInfo", subInfo);
@@ -732,6 +750,8 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
         for(Proxy &x : nodes)
             x.Group = argGroupName;
 
+    recordMetric("nodes_parsed", nodes.size());
+
     //do pre-process now
     preprocessNodes(nodes, ext);
 
@@ -757,6 +777,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
 
     //std::cerr<<"Generate target: ";
     proxy = parseProxy(global.proxyConfig);
+    PhaseTimer export_timer("export");
     switch(hash_(argTarget))
     {
     case "clash"_hash: case "clashr"_hash:
@@ -956,6 +977,17 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
         *status_code = 500;
         return "Unrecognized target";
     }
+    if(auto context = currentDiagnostics())
+    {
+        std::lock_guard<std::mutex> lock(context->mutex);
+        if(context->metrics.contains("nodes_exported") && context->metrics["nodes_exported"] == 0)
+        {
+            *status_code = 422;
+            return "No nodes can be exported to the selected target";
+        }
+    }
+    if(output_content.empty()) { *status_code = 422; return "No nodes can be exported to the selected target"; }
+    recordMetric("output_bytes", output_content.size());
     writeLog(0, "Generate completed.", LOG_LEVEL_INFO);
     if(!argFilename.empty())
         response.headers.emplace("Content-Disposition", "attachment; filename=\"" + argFilename + "\"; filename*=utf-8''" + urlEncode(argFilename));
@@ -1097,11 +1129,15 @@ std::string surgeConfToClash(RESPONSE_CALLBACK_ARGS)
         if(addNodes(x, nodes, 0, parse_set) == -1)
         {
             if(global.skipFailedLinks)
-                writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
+            {
+                const auto error = parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
+                recordWarning(error);
+                writeLog(0, error, LOG_LEVEL_WARNING);
+            }
             else
             {
                 *status_code = 400;
-                return "The following link doesn't contain any valid node info: " + x;
+                return parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
             }
         }
     }
@@ -1110,7 +1146,7 @@ std::string surgeConfToClash(RESPONSE_CALLBACK_ARGS)
     if(nodes.empty())
     {
         *status_code = 400;
-        return "No nodes were found!";
+        return parse_set.error.empty() ? "No nodes remain after parsing and filtering" : parse_set.error;
     }
 
     extra_settings ext;

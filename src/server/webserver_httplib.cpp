@@ -11,6 +11,8 @@
 #include "utils/stl_extra.h"
 #include "utils/urlencode.h"
 #include "webserver.h"
+#include "handler/diagnostics.h"
+#include "handler/interfaces.h"
 
 static const char *request_header_blacklist[] = {"host", "accept", "accept-encoding"};
 
@@ -65,7 +67,36 @@ static httplib::Server::Handler makeHandler(const responseRoute &rr)
                 req.postdata = request.body;
             }
         }
-        auto result = rr.rc(req, resp);
+        std::string result;
+        const bool converting = request.path == "/sub" || request.path == "/diagnose" || request.path == "/getprofile" || request.path == "/refreshrules";
+        auto context = converting ? newDiagnostics() : nullptr;
+        if(context)
+        {
+            context->force_refresh = getUrlArg(req.argument, "refresh") == "true";
+            context->use_stale = getUrlArg(req.argument, "use_stale") == "true";
+        }
+        DiagnosticScope diagnostics(context);
+        {
+            PhaseTimer total("total");
+            try { result = rr.rc(req, resp); }
+            catch(const std::exception &error)
+            {
+                resp.status_code = converting ? 502 : 500;
+                result = redactForLog(error.what());
+                writeLog(0, result, LOG_LEVEL_ERROR);
+            }
+        }
+        if(context) resp.headers["X-Request-ID"] = context->id;
+        if(request.path == "/diagnose")
+        {
+            auto report = diagnosticsJson(context);
+            report["success"] = resp.status_code >= 200 && resp.status_code < 300;
+            report["status_code"] = resp.status_code;
+            report["output"] = report["success"].get<bool>() ? result : "";
+            report["error"] = report["success"].get<bool>() ? "" : redactForLog(result);
+            result = report.dump();
+            resp.content_type = "application/json;charset=utf-8";
+        }
         response.status = resp.status_code;
         for (auto &h: resp.headers)
         {
@@ -80,21 +111,19 @@ static httplib::Server::Handler makeHandler(const responseRoute &rr)
     };
 }
 
-static std::string dump(const httplib::Headers &headers)
-{
-    std::string s;
-    for (auto &x: headers)
-    {
-        if (startsWith(x.first, "LOCAL_") || startsWith(x.first, "REMOTE_"))
-            continue;
-        s += x.first + ": " + x.second + "|";
-    }
-    return s;
-}
-
 int WebServer::start_web_server_multi(listener_args *args)
 {
     httplib::Server server;
+    // A second instance must fail instead of sharing the port through SO_REUSEPORT.
+    server.set_socket_options([](socket_t socket) {
+#ifdef _WIN32
+        int exclusive = 1;
+        setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&exclusive), sizeof(exclusive));
+#else
+        int reuse = 1;
+        setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
+    });
     for (auto &x : responses)
     {
         switch (hash_(x.method))
@@ -143,8 +172,8 @@ int WebServer::start_web_server_multi(listener_args *args)
     server.set_pre_routing_handler([&](const httplib::Request &req, httplib::Response &res)
     {
         writeLog(0, "Accept connection from client " + req.remote_addr + ":" + std::to_string(req.remote_port), LOG_LEVEL_DEBUG);
-        writeLog(0, "handle_cmd:    " + req.method + " handle_uri:    " + req.target, LOG_LEVEL_VERBOSE);
-        writeLog(0, "handle_header: " + dump(req.headers), LOG_LEVEL_VERBOSE);
+        writeLog(0, "handle_cmd:    " + req.method + " handle_uri:    " + req.path, LOG_LEVEL_VERBOSE);
+        writeLog(0, "handle_header: [header values omitted]", LOG_LEVEL_VERBOSE);
 
         if (req.has_header("SubConverter-Request"))
         {
@@ -203,11 +232,11 @@ int WebServer::start_web_server_multi(listener_args *args)
         }
         catch (const std::exception &ex)
         {
-            std::string return_data = "Internal server error while processing request '" + req.target + "'!\n";
+            std::string return_data = "Internal server error while processing request '" + req.path + "'!\n";
             return_data += "\n  exception: ";
             return_data += type(ex);
             return_data += "\n  what(): ";
-            return_data += ex.what();
+            return_data += redactForLog(ex.what());
             res.status = 500;
             res.set_content(return_data, "text/plain");
         }
@@ -223,7 +252,13 @@ int WebServer::start_web_server_multi(listener_args *args)
     server.new_task_queue = [args] {
         return new httplib::ThreadPool(args->max_workers);
     };
-    server.bind_to_port(args->listen_address, args->port, 0);
+    if(!server.bind_to_port(args->listen_address, args->port, 0))
+    {
+        writeLog(0, "Cannot bind " + args->listen_address + ":" + std::to_string(args->port) +
+            "; check the listen address and whether the port is already in use", LOG_LEVEL_FATAL);
+        return -1;
+    }
+    writeLog(0, "Startup completed. Serving HTTP @ http://" + args->listen_address + ":" + std::to_string(args->port), LOG_LEVEL_INFO);
 
     std::thread thread([&]()
     {

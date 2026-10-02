@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "handler/settings.h"
+#include "handler/diagnostics.h"
 #include "handler/webget.h"
 #include "parser/config/proxy.h"
 #include "parser/infoparser.h"
@@ -34,6 +35,7 @@ void copyNodes(std::vector<Proxy> &source, std::vector<Proxy> &dest)
 
 int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID, parse_settings &parse_set)
 {
+    parse_set.error.clear();
     std::string &proxy = *parse_set.proxy, &subInfo = *parse_set.sub_info;
     string_array &exclude_remarks = *parse_set.exclude_remarks;
     string_array &include_remarks = *parse_set.include_remarks;
@@ -139,10 +141,21 @@ int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID, parse_
     switch(linkType)
     {
     case ConfType::SUB:
+    {
         writeLog(LOG_TYPE_INFO, "Downloading subscription data...");
         if(startsWith(link, "surge:///install-config")) //surge config link
             link = urlDecode(getUrlArg(link, "url"));
-        strSub = webGet(link, proxy, global.cacheSubscription, &extra_headers, request_headers);
+        string_icase_map source_headers;
+        if(request_headers && request_headers->contains("User-Agent")) source_headers["User-Agent"] = request_headers->at("User-Agent");
+        auto origin = sourceOrigin(link);
+        const auto settings = downloadSettings();
+        // Origin includes the port; credentials are configured for exactly that source.
+        if(auto found = settings->subscriptionHeaders.find(origin); found != settings->subscriptionHeaders.end())
+            for(const auto &[key, value] : found->second) source_headers[key] = value;
+        {
+            PhaseTimer timer("subscription_download");
+            strSub = webGet(link, proxy, global.cacheSubscription, &extra_headers, &source_headers);
+        }
         /*
         if(strSub.size() == 0)
         {
@@ -159,10 +172,12 @@ int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID, parse_
         */
         if(!strSub.empty())
         {
+            PhaseTimer parsing("subscription_parse");
             writeLog(LOG_TYPE_INFO, "Parsing subscription data...");
             if(explodeConfContent(strSub, nodes) == 0)
             {
-                writeLog(LOG_TYPE_ERROR, "Invalid subscription: '" + link + "'!");
+                parse_set.error = "Subscription content cannot be parsed (" + safeSource(link) + ")";
+                writeLog(LOG_TYPE_ERROR, parse_set.error);
                 return -1;
             }
             if(startsWith(strSub, "ssd://"))
@@ -185,10 +200,12 @@ int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID, parse_
         }
         else
         {
-            writeLog(LOG_TYPE_ERROR, "Cannot download subscription data.");
+            parse_set.error = lastFetchError().empty() ? "Subscription source returned empty content" : lastFetchError();
+            writeLog(LOG_TYPE_ERROR, parse_set.error);
             return -1;
         }
         break;
+    }
     case ConfType::Local:
         if(!authorized)
             return -1;
