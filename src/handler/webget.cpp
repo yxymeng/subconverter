@@ -135,7 +135,10 @@ struct ResponseHeaders
     std::string *content;
     bool restrict_origin;
     bool blocked = false;
+    bool self_reference = false;
 };
+
+static bool selfRequest(const std::string &url);
 
 static size_t headerWriter(char *data, size_t size, size_t nmemb, ResponseHeaders *response)
 {
@@ -144,7 +147,7 @@ static size_t headerWriter(char *data, size_t size, size_t nmemb, ResponseHeader
     response->content->append(line);
     long status = 0;
     curl_easy_getinfo(response->handle, CURLINFO_RESPONSE_CODE, &status);
-    if(response->restrict_origin && status >= 300 && status < 400 && startsWith(toLower(line), "location:"))
+    if(status >= 300 && status < 400 && startsWith(toLower(line), "location:"))
     {
         char *current_url = nullptr, *redirect_url = nullptr;
         curl_easy_getinfo(response->handle, CURLINFO_EFFECTIVE_URL, &current_url);
@@ -152,10 +155,14 @@ static size_t headerWriter(char *data, size_t size, size_t nmemb, ResponseHeader
         defer(curl_url_cleanup(parsed); curl_free(redirect_url);)
         if(current_url && parsed && curl_url_set(parsed, CURLUPART_URL, current_url, 0) == CURLUE_OK &&
            curl_url_set(parsed, CURLUPART_URL, trimWhitespace(line.substr(9), true, true).c_str(), 0) == CURLUE_OK &&
-           curl_url_get(parsed, CURLUPART_URL, &redirect_url, 0) == CURLUE_OK && sourceOrigin(current_url) != sourceOrigin(redirect_url))
+           curl_url_get(parsed, CURLUPART_URL, &redirect_url, 0) == CURLUE_OK)
         {
-            response->blocked = true;
-            return 0;
+            response->self_reference = selfRequest(redirect_url);
+            if(response->self_reference || (response->restrict_origin && sourceOrigin(current_url) != sourceOrigin(redirect_url)))
+            {
+                response->blocked = true;
+                return 0;
+            }
         }
     }
     return length;
@@ -296,9 +303,9 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     }
     result.transport_code = transfer;
     result.success = transfer == CURLE_OK && code >= 200 && code < 300;
-    if(transfer != CURLE_OK) result.error = self ? "Self-referencing conversion request rejected" : curl_easy_strerror(transfer);
+    if(transfer != CURLE_OK) result.error = self || response.self_reference ? "Self-referencing conversion request rejected" : curl_easy_strerror(transfer);
     else if(!result.success) result.error = "HTTP " + std::to_string(code);
-    if(response.blocked) result.error = "Cross-origin redirect with source-specific headers rejected";
+    if(response.blocked && !response.self_reference) result.error = "Cross-origin redirect with source-specific headers rejected";
     if(result.success && argument.validate_content && !argument.validate_content(body))
     {
         result.success = false;
@@ -400,8 +407,8 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
     }
     const auto context = currentDiagnostics();
     const bool force = context && context->force_refresh;
-    const bool rules = context && currentPhase() == "rules_download";
-    const bool stale = rules && context->use_stale;
+    const bool rules = currentPhase() == "rules_download";
+    const bool stale = rules && context && context->use_stale;
     const bool fallback = stale || (!rules && global.serveCacheOnFetchFail);
     int code = 0;
     std::string content, headers;

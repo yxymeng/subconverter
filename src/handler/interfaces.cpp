@@ -1495,6 +1495,7 @@ int simpleGenerator()
 
     string_multimap allItems;
     std::string proxy = parseProxy(global.proxySubscription);
+    bool failed = false;
     for(std::string &x : sections)
     {
         Request request;
@@ -1509,15 +1510,28 @@ int simpleGenerator()
         {
             //std::cerr<<"Artifact '"<<x<<"' output path missing! Skipping...\n\n";
             writeLog(0, "Artifact '" + x + "' output path missing! Skipping...\n", LOG_LEVEL_ERROR);
+            failed = true;
             continue;
         }
+        auto context = newDiagnostics();
+        context->force_refresh = ini.get_bool("refresh");
+        context->use_stale = ini.get_bool("use_stale");
+        DiagnosticScope diagnostics(context);
+        const auto convert = [&](auto callback) {
+            try { return callback(request, response); }
+            catch(const std::exception &error)
+            {
+                response.status_code = 502;
+                return redactForLog(error.what());
+            }
+        };
         if(ini.item_exist("profile"))
         {
             profile = ini.get("profile");
             request.argument.emplace("name", profile);
             request.argument.emplace("token", global.accessToken);
             request.argument.emplace("expand", "true");
-            content = getProfile(request, response);
+            content = convert(getProfile);
         }
         else
         {
@@ -1531,6 +1545,8 @@ int simpleGenerator()
                     writeLog(0, "Artifact '" + x + "' generate ERROR! Please check your link.\n", LOG_LEVEL_ERROR);
                     if(sections.size() == 1)
                         return -1;
+                    failed = true;
+                    continue;
                 }
                 // add UTF-8 BOM
                 fileWrite(path, "\xEF\xBB\xBF" + content, true);
@@ -1544,7 +1560,7 @@ int simpleGenerator()
                     continue;
                 request.argument.emplace(y.first, y.second);
             }
-            content = subconverter(request, response);
+            content = convert(subconverter);
         }
         if(response.status_code != 200)
         {
@@ -1552,6 +1568,7 @@ int simpleGenerator()
             writeLog(0, "Artifact '" + x + "' generate ERROR! Reason: " + content + "\n", LOG_LEVEL_ERROR);
             if(sections.size() == 1)
                 return -1;
+            failed = true;
             continue;
         }
         fileWrite(path, content, true);
@@ -1564,7 +1581,7 @@ int simpleGenerator()
     }
     //std::cerr<<"All artifact generated. Exiting...\n";
     writeLog(0, "All artifact generated. Exiting...", LOG_LEVEL_INFO);
-    return 0;
+    return failed ? -1 : 0;
 }
 
 std::string renderTemplate(RESPONSE_CALLBACK_ARGS)

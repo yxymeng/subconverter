@@ -60,11 +60,12 @@ class Source:
                     time.sleep(delay)
                     self.send_response(code)
                     self.send_header('Content-Length', str(len(body) + (100 if len(route) > 3 and route[3] == 'truncate' else 0)))
-                    for key,value in owner.response_headers.items(): self.send_header(key,value)
+                    headers=route[3] if len(route)>3 and isinstance(route[3],dict) else owner.response_headers
+                    for key,value in headers.items(): self.send_header(key,value)
                     self.end_headers()
                     try: self.wfile.write(body)
                     except (BrokenPipeError, ConnectionResetError): pass
-                    if len(route) > 3: self.close_connection = True
+                    if len(route) > 3 and route[3] == 'truncate': self.close_connection = True
                 finally:
                     with owner.lock: owner.active -= 1
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -79,7 +80,7 @@ class Source:
 
 class App:
     def __init__(self, extra='', asynchronous=True, parallel=4, proxy='NONE', default_url='',
-                 listen='127.0.0.1', fallback=True, template='base/fixture.yml'):
+                 listen='127.0.0.1', fallback=True, template='base/fixture.yml', workers=8):
         self.temp = tempfile.TemporaryDirectory(prefix='subconverter-test-')
         self.root = Path(self.temp.name)
         shutil.copytree(BASE, self.root, dirs_exist_ok=True)
@@ -108,7 +109,7 @@ serve_file_root=web
 log_level=verbose
 max_allowed_rules=0
 max_allowed_download_size=0
-max_concurrent_threads=8
+max_concurrent_threads={workers}
 enable_cache=true
 cache_subscription=60
 cache_ruleset=60
@@ -156,6 +157,9 @@ class Integration(unittest.TestCase):
     def expire(self, app):
         old=time.time()-120
         for entry in (app.root/'cache').glob('v2-*'): os.utime(entry,(old,old))
+    def generate(self, app, sections):
+        (app.root/'generate.ini').write_text(''.join('['+name+']\n'+''.join(key+'='+value+'\n' for key,value in items.items()) for name,items in sections))
+        return subprocess.run([str(BINARY),'-f',str(app.pref),'-g'],cwd=app.root,capture_output=True,text=True,timeout=15)
     def test_header_policy_and_403_fix(self):
         self.source.routes['/sub'] = lambda n,h: (403 if 'SubConverter-Request' in h or 'SubConverter-Version' in h else 200, SUB, 0)
         self.source.response_headers={'Set-Cookie':'arbitrary_secret=fixture-cookie'}
@@ -403,6 +407,73 @@ class Integration(unittest.TestCase):
         bound=self.app()
         status,report,_=bound.request(f'http://localhost:{bound.port}/sub?target=clash')
         self.assertGreaterEqual(status,400,report); self.assertIn('Self-referencing',str(report))
+    def test_self_request_rejected_at_each_redirect_hop(self):
+        app=self.app(listen='0.0.0.0',parallel=2,fallback=False,workers=2)
+        for resource in ('subscription','config','rules'):
+            for code in (301,302,303,307,308):
+                with self.subTest(resource=resource,code=code):
+                    path=f'/redirect-{resource}-{code}'
+                    source=self.source.origin+path
+                    destination=app.origin.replace('127.0.0.1','127.0.0.2')+'/sub?'+urlencode({'target':'clash','url':source})
+                    self.source.routes[path]=(code,b'',0,{'Location':destination})
+                    config=None if resource=='subscription' else (source if resource=='config' else self.config([source]))
+                    status,report,_=app.request(source if resource=='subscription' else self.source.origin+'/sub',config,refresh='true')
+                    self.assertGreaterEqual(status,400,report)
+                    self.assertIn('Self-referencing',str(report))
+                    self.assertEqual(self.source.counts[path],1)
+                    rejected=[d for d in report['downloads'] if 'Self-referencing' in d.get('error','')]
+                    self.assertEqual(len(rejected),1,report); self.assertEqual(rejected[0]['attempts'],1)
+                    self.assertEqual(get(app.origin+'/status')[0],200)
+        self.source.routes['/first-hop']=(302,b'',0,{'Location':'/second-hop'})
+        self.source.routes['/second-hop']=(307,b'',0,{'Location':app.origin+'/sub?target=clash'})
+        status,report,_=app.request(self.source.origin+'/first-hop')
+        self.assertGreaterEqual(status,400,report); self.assertIn('Self-referencing',str(report))
+        self.assertEqual(self.source.counts['/first-hop'],1); self.assertEqual(self.source.counts['/second-hop'],1)
+
+    def test_offline_generation_obeys_required_rule_policy(self):
+        app=self.app()
+        config=self.config([self.source.origin+'/rule'])
+        self.source.routes['/rule']=(200,b'DOMAIN,old.example\n',0)
+        items={'path':'offline.yml','target':'clash','url':self.source.origin+'/sub','config':config,'emoji':'false'}
+        output=app.root/'offline.yml'
+        warm=self.generate(app,[('fixture',items)])
+        self.assertEqual(warm.returncode,0,warm.stderr); self.assertIn('old.example',output.read_text())
+        counts=self.source.counts.copy()
+        self.assertEqual(self.generate(app,[('fixture',items)]).returncode,0)
+        self.assertEqual(self.source.counts,counts)
+        self.expire(app)
+        self.source.routes['/rule']=(403,b'denied',0)
+        previous=output.read_bytes()
+        before=self.source.counts['/rule']
+        failed=self.generate(app,[('fixture',items)])
+        self.assertNotEqual(failed.returncode,0,failed.stderr); self.assertIn('generate ERROR',failed.stderr)
+        self.assertIn('Required ruleset',failed.stderr); self.assertEqual(output.read_bytes(),previous)
+        self.assertEqual(self.source.counts['/rule'],before+1)
+        before=self.source.counts['/rule']
+        stale=self.generate(app,[('fixture',{**items,'use_stale':'true'})])
+        self.assertEqual(stale.returncode,0,stale.stderr); self.assertIn('old.example',output.read_text())
+        self.assertEqual(self.source.counts['/rule'],before)
+        self.source.routes['/rule']=(200,b'DOMAIN,new.example\n',0)
+        refreshed=self.generate(app,[('fixture',{**items,'refresh':'true','use_stale':'true'})])
+        self.assertEqual(refreshed.returncode,0,refreshed.stderr); self.assertIn('new.example',output.read_text())
+        self.assertNotIn('old.example',output.read_text()); self.assertEqual(self.source.counts['/rule'],before+1)
+        self.source.routes['/rule']=(403,b'denied',0)
+        previous=output.read_bytes()
+        fallback=self.generate(app,[('fixture',{**items,'refresh':'true','use_stale':'true'})])
+        self.assertEqual(fallback.returncode,0,fallback.stderr); self.assertEqual(output.read_bytes(),previous)
+        self.assertEqual(self.source.counts['/rule'],before+2)
+        forced=self.generate(app,[('fixture',{**items,'refresh':'true'})])
+        self.assertNotEqual(forced.returncode,0,forced.stderr); self.assertEqual(output.read_bytes(),previous)
+        self.assertEqual(self.source.counts['/rule'],before+3)
+        mixed=self.generate(app,[('fixture',{**items,'refresh':'true'}),('plain',{'path':'plain.txt','target':'trojan','url':self.source.origin+'/sub'})])
+        self.assertNotEqual(mixed.returncode,0,mixed.stderr); self.assertEqual(output.read_bytes(),previous)
+        self.assertIn(b'trojan://',base64.b64decode((app.root/'plain.txt').read_text()))
+        output.unlink()
+        self.source.routes['/uncached-rule']=(403,b'denied',0)
+        self.config([self.source.origin+'/uncached-rule'])
+        cold=self.generate(app,[('fixture',{**items,'refresh':'true','use_stale':'true'})])
+        self.assertNotEqual(cold.returncode,0,cold.stderr); self.assertFalse(output.exists())
+
     def test_configuration_format_parity(self):
         app=self.app()
         configs={

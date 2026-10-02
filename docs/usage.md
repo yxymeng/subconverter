@@ -40,6 +40,8 @@ subscription_source_headers = '{}'
 
 `serve_cache_on_fetch_fail` 控制订阅、外部配置和模板下载失败时是否回退已有缓存；转换请求的必需规则始终采用上面的显式策略。`skip_failed_links=true` 时允许其他订阅继续转换，诊断 warnings 会列出被跳过的源；全无节点仍返回错误。当前默认示例均启用缓存与有上限的并发，已有配置须自行设置。
 
+离线生成 `-g` 采用相同的规则缓存策略；在 `generate.ini` 的产物节中设置 `refresh=true`、`use_stale=true`。生成失败保留已有产物，并返回非零退出码；批量生成会继续处理其他产物，但任一产物失败仍返回非零退出码。
+
 源站自定义头只按精确 origin 匹配（协议、主机、非默认端口），可配置 UA 或凭据：
 
 ```toml
