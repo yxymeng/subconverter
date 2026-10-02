@@ -65,7 +65,8 @@ bool hostPointsToLocalServer(std::string host, const std::string &listen_address
             const bool unspecified = bytes[12] == 0 && bytes[13] == 0 && bytes[14] == 0 && bytes[15] == 0;
             local = local || (ipv4(target->ai_addr) && (bytes[12] == 127 || unspecified)) ||
                 (listen_address == "::" && target->ai_family == AF_INET6 &&
-                 IN6_IS_ADDR_LOOPBACK(&reinterpret_cast<const sockaddr_in6 *>(target->ai_addr)->sin6_addr));
+                 (IN6_IS_ADDR_LOOPBACK(&reinterpret_cast<const sockaddr_in6 *>(target->ai_addr)->sin6_addr) ||
+                  IN6_IS_ADDR_UNSPECIFIED(&reinterpret_cast<const sockaddr_in6 *>(target->ai_addr)->sin6_addr)));
         }
 #ifdef _WIN32
         ULONG size = 16384;

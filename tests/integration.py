@@ -415,6 +415,32 @@ class Integration(unittest.TestCase):
         bound=self.app()
         status,report,_=bound.request(f'http://localhost:{bound.port}/sub?target=clash')
         self.assertGreaterEqual(status,400,report); self.assertIn('Self-referencing',str(report))
+    def test_ipv6_unspecified_self_requests(self):
+        try:
+            with socket.socket(socket.AF_INET6,socket.SOCK_STREAM) as probe:
+                probe.bind(('::1',0)); port=probe.getsockname()[1]
+        except OSError as error: self.skipTest('IPv6 loopback unavailable: '+str(error))
+        app=self.app(listen='::',port=port,origin_host='[::1]',workers=2,parallel=2,fallback=False,
+                     default_url=f'http://[::]:{port}/sub?target=clash')
+        for host in ('[::]','[0:0:0:0:0:0:0:0]'):
+            destination=f'http://{host}:{app.port}/sub?target=clash'
+            for redirect in (False,True):
+                with self.subTest(host=host,redirect=redirect):
+                    source=destination
+                    if redirect:
+                        self.source.routes['/ipv6-redirect']=(302,b'',0)
+                        self.source.response_headers={'Location':destination}
+                        source=self.source.origin+'/ipv6-redirect'
+                    status,report,_=app.request(source,refresh='true')
+                    self.assertGreaterEqual(status,400,report)
+                    self.assertIn('Self-referencing',str(report))
+                    self.assertEqual([d['attempts'] for d in report['downloads']],[1])
+                    self.assertEqual(get(app.origin+'/status')[0],200)
+        self.source.response_headers={}
+        status,report,_=app.request(self.source.origin+'/sub',refresh='true')
+        self.assertEqual(status,200,report)
+        self.assertIn('fixture-node',report['output'])
+
     def test_failed_configuration_reload_preserves_previous_settings(self):
         for mode in ('readconf','updateconf','automatic'):
             app=self.app(parallel=2,extra='subscription_source_headers='+json.dumps({self.source.origin:{'X-Policy':'old'}}))
