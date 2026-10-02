@@ -6,6 +6,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import json
 import http.client
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import shutil
@@ -77,7 +78,8 @@ class Source:
         self.thread.join()
 
 class App:
-    def __init__(self, extra='', asynchronous=True, parallel=4, proxy='NONE', default_url=''):
+    def __init__(self, extra='', asynchronous=True, parallel=4, proxy='NONE', default_url='',
+                 listen='127.0.0.1', fallback=True, template='base/fixture.yml'):
         self.temp = tempfile.TemporaryDirectory(prefix='subconverter-test-')
         self.root = Path(self.temp.name)
         shutil.copytree(BASE, self.root, dirs_exist_ok=True)
@@ -89,7 +91,7 @@ class App:
 api_mode=true
 default_url={default_url}
 enable_insert=false
-clash_rule_base=base/fixture.yml
+clash_rule_base={template}
 proxy_config=NONE
 proxy_ruleset=NONE
 proxy_subscription={proxy}
@@ -99,7 +101,7 @@ clash_use_new_field_name=true
 enabled=true
 overwrite_original_rules=true
 [server]
-listen=127.0.0.1
+listen={listen}
 port={self.port}
 serve_file_root=web
 [advanced]
@@ -111,7 +113,7 @@ enable_cache=true
 cache_subscription=60
 cache_ruleset=60
 cache_config=60
-serve_cache_on_fetch_fail=true
+serve_cache_on_fetch_fail={str(fallback).lower()}
 async_fetch_ruleset={str(asynchronous).lower()}
 max_parallel_downloads={parallel}
 connect_timeout=1
@@ -151,6 +153,9 @@ class Integration(unittest.TestCase):
     def config(self, urls):
         self.source.routes['/config'] = (200, ('[custom]\nenable_rule_generator=true\noverwrite_original_rules=true\n' + ''.join('ruleset=DIRECT,'+url+'\n' for url in urls) + 'ruleset=DIRECT,[]MATCH\n').encode(), 0)
         return self.source.origin+'/config'
+    def expire(self, app):
+        old=time.time()-120
+        for entry in (app.root/'cache').glob('v2-*'): os.utime(entry,(old,old))
     def test_header_policy_and_403_fix(self):
         self.source.routes['/sub'] = lambda n,h: (403 if 'SubConverter-Request' in h or 'SubConverter-Version' in h else 200, SUB, 0)
         self.source.response_headers={'Set-Cookie':'arbitrary_secret=fixture-cookie'}
@@ -239,10 +244,65 @@ class Integration(unittest.TestCase):
             status,report,_=app.request(self.source.origin+'/sub',self.config([prefix+rule]),refresh='true')
             self.assertEqual(status,502,report)
 
+    def test_refresh_takes_priority_over_manual_stale(self):
+        app=self.app()
+        config=self.config([self.source.origin+'/rule'])
+        self.source.routes['/rule']=(200,b'DOMAIN,old.example\n',0)
+        self.assertEqual(app.request(self.source.origin+'/sub',config)[0],200)
+        before=self.source.counts['/rule']
+        self.source.routes['/rule']=(200,b'DOMAIN,new.example\n',0)
+        self.expire(app)
+        status,report,_=app.request(self.source.origin+'/sub',config,use_stale='true')
+        self.assertEqual(status,200,report); self.assertIn('old.example',report['output'])
+        self.assertEqual(self.source.counts['/rule'],before)
+        status,report,_=app.request(self.source.origin+'/sub',config,refresh='true',use_stale='true')
+        self.assertEqual(status,200,report); self.assertIn('new.example',report['output'])
+        self.assertNotIn('old.example',report['output'])
+        self.assertEqual(self.source.counts['/rule'],before+1)
+        self.source.routes['/rule']=(403,b'denied',0)
+        status,report,_=app.request(self.source.origin+'/sub',config,refresh='true',use_stale='true')
+        self.assertEqual(status,200,report); self.assertIn('new.example',report['output'])
+        self.assertEqual(self.source.counts['/rule'],before+2)
+        self.assertIn('stale',[d['cache'] for d in report['downloads']])
+        status,report,_=app.request(self.source.origin+'/sub',config,refresh='true')
+        self.assertEqual(status,502,report); self.assertEqual(report['output'],'')
+        self.source.routes['/uncached-rule']=(403,b'denied',0)
+        status,report,_=app.request(self.source.origin+'/sub',self.config([self.source.origin+'/uncached-rule']),refresh='true',use_stale='true')
+        self.assertEqual(status,502,report); self.assertEqual(report['output'],'')
+
+    def test_non_rule_fallback_obeys_legacy_setting(self):
+        for fallback in (True,False):
+            template=self.source.origin+'/template'
+            app=self.app(fallback=fallback,template=template)
+            config=self.config([])
+            for path in ('/sub','/config','/template'):
+                with self.subTest(fallback=fallback,resource=path):
+                    self.source.routes['/sub']=(200,SUB,0)
+                    self.config([])
+                    self.source.routes['/template']=(200,b'port: 4321\nfixture_marker: cached-template\nproxies: []\nproxy-groups: []\nrules: []\n',0)
+                    status,report,_=app.request(self.source.origin+'/sub',config,refresh='true')
+                    self.assertEqual(status,200,report); self.assertIn('cached-template',report['output'])
+                    self.expire(app)
+                    self.source.routes[path]=(403,b'denied',.2)
+                    before=self.source.counts[path]
+                    with ThreadPoolExecutor(max_workers=4) as pool:
+                        results=list(pool.map(lambda _:app.request(self.source.origin+'/sub',config),range(4)))
+                    self.assertEqual(self.source.counts[path],before+1)
+                    for status,report,_ in results:
+                        if fallback:
+                            self.assertEqual(status,200,report)
+                            self.assertIn('cached-template',report['output']); self.assertIn('port: 4321',report['output'])
+                            self.assertIn('stale',[d['cache'] for d in report['downloads']])
+                        else:
+                            self.assertGreaterEqual(status,400,report)
+                            self.assertFalse(report['success']); self.assertEqual(report['output'],'')
+                            self.assertTrue(report['error'])
+
     def test_source_headers_redirect_boundary(self):
         destination=Source()
         try:
-            app=self.app(extra='subscription_source_headers='+json.dumps({self.source.origin:{'X-Source-Key':'source-secret'}}))
+            # Verify rejection without masking the error through an allowed cached subscription.
+            app=self.app(fallback=False,extra='subscription_source_headers='+json.dumps({self.source.origin:{'X-Source-Key':'source-secret'}}))
             self.source.routes['/redirect']=(302,b'',0)
             self.source.response_headers={'Location':'/same-origin'}
             status,report,_=app.request(self.source.origin+'/redirect')
@@ -271,9 +331,7 @@ class Integration(unittest.TestCase):
         self.assertEqual(first['output'],app.request(source,config)[1]['output'])
         self.assertEqual(counts,self.source.counts)
         self.source.routes['/rule']=(200,b'DOMAIN,second.example\n',.15)
-        for entry in (app.root/'cache').glob('v2-*'):
-            import os
-            os.utime(entry,(time.time()-120,time.time()-120))
+        self.expire(app)
         self.assertIn('second.example',app.request(source,config)[1]['output'])
         self.assertGreater(self.source.counts['/rule'],counts['/rule'])
         self.assertEqual(app.request(source,config,refresh='true')[0],200)
@@ -327,6 +385,24 @@ class Integration(unittest.TestCase):
         self.assertIn('proxy',str(report['downloads']))
         status,report,_=app.request(app.origin+'/sub?target=clash')
         self.assertGreaterEqual(status,400);self.assertIn('Self-referencing',str(report))
+    def test_self_request_resolves_wildcard_aliases(self):
+        app=self.app(listen='0.0.0.0',parallel=2)
+        aliases=['127.0.0.2','localhost','[::ffff:127.0.0.1]']
+        try:
+            addresses=socket.getaddrinfo(socket.gethostname(),None,socket.AF_INET)
+            aliases.extend({address[4][0] for address in addresses})
+            aliases.append(socket.gethostname())
+        except socket.gaierror: pass
+        for host in aliases:
+            with self.subTest(host=host):
+                status,report,_=app.request(f'http://{host}:{app.port}/sub?target=clash')
+                self.assertGreaterEqual(status,400,report)
+                self.assertIn('Self-referencing',str(report))
+                self.assertEqual(report['downloads'][0]['attempts'],1)
+                self.assertEqual(get(app.origin+'/status')[0],200)
+        bound=self.app()
+        status,report,_=bound.request(f'http://localhost:{bound.port}/sub?target=clash')
+        self.assertGreaterEqual(status,400,report); self.assertIn('Self-referencing',str(report))
     def test_configuration_format_parity(self):
         app=self.app()
         configs={

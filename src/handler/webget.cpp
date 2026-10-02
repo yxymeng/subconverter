@@ -25,6 +25,7 @@
 #include "utils/file_extra.h"
 #include "utils/lock.h"
 #include "utils/logger.h"
+#include "utils/network.h"
 #include "utils/urlencode.h"
 #include "version.h"
 #include "webget.h"
@@ -216,9 +217,8 @@ static bool selfRequest(const std::string &url)
     defer(curl_free(host); curl_free(port);)
     if(curl_url_get(parsed, CURLUPART_HOST, &host, 0) != CURLUE_OK ||
        curl_url_get(parsed, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) != CURLUE_OK) return false;
-    const std::string name = toLower(host);
     return to_int(port) == global.listenPort &&
-        (name == "localhost" || name == "127.0.0.1" || name == "[::1]" || name == global.listenAddress);
+        hostPointsToLocalServer(host, global.listenAddress);
 }
 
 static int curlGet(const FetchArgument &argument, FetchResult &result)
@@ -400,7 +400,9 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
     }
     const auto context = currentDiagnostics();
     const bool force = context && context->force_refresh;
-    const bool stale = context && context->use_stale && currentPhase() == "rules_download";
+    const bool rules = context && currentPhase() == "rules_download";
+    const bool stale = rules && context->use_stale;
+    const bool fallback = stale || (!rules && global.serveCacheOnFetchFail);
     int code = 0;
     std::string content, headers;
     FetchArgument argument {HTTP_GET, url, proxy, nullptr, request_headers, nullptr, cache_ttl, false, validate_content};
@@ -430,11 +432,11 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
         recordDownload({{"phase", currentPhase()}, {"source", safeSource(url)}, {"source_id", getMD5(url)},
             {"http_status", flight->status_code}, {"transport_code", flight->transport_code},
             {"success", false}, {"error", flight->error}, {"bytes", 0}, {"duration_ms", 0}, {"cache", "shared"}});
-        if(stale && readCache(path, content, headers) && valid(content)) return cached("stale", content, headers);
+        if(fallback && readCache(path, content, headers) && valid(content)) return cached("stale", content, headers);
         return "";
     }
     struct stat info {};
-    if((!force || stale) && stat(path.c_str(), &info) == 0 && (stale || difftime(time(nullptr), info.st_mtime) <= cache_ttl) && readCache(path, content, headers) && valid(content))
+    if(!force && stat(path.c_str(), &info) == 0 && (stale || difftime(time(nullptr), info.st_mtime) <= cache_ttl) && readCache(path, content, headers) && valid(content))
         return cached(stale ? "stale" : "hit", content, headers);
     curlGet(argument, result);
     flight->status_code = code;
@@ -449,7 +451,7 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
         if(latest_fetch_error.empty()) latest_fetch_error = "Download returned empty content (" + safeSource(url) + ")";
         flight->success = false; flight->error = latest_fetch_error;
         // Required rules only fall back when explicitly requested, regardless of legacy defaults.
-        if((stale || (!context && global.serveCacheOnFetchFail)) && readCache(path, content, headers) && valid(content))
+        if(fallback && readCache(path, content, headers) && valid(content))
             content = cached("stale", content, headers);
         else content.clear();
     }
