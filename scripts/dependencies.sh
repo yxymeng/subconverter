@@ -17,4 +17,17 @@ checkout_dependency() {
     git -C "$destination" checkout --detach FETCH_HEAD
     test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
     git -C "$destination" submodule update --init --recursive --depth=1
+    if [[ "$repository" == "https://github.com/jbeder/yaml-cpp" ]]; then
+        # Backport yaml-cpp 7b469b4: GCC 15 requires an explicit <cstdint> include.
+        git -C "$destination" apply <<'PATCH'
+diff --git a/src/emitterutils.cpp b/src/emitterutils.cpp
+--- a/src/emitterutils.cpp
++++ b/src/emitterutils.cpp
+@@ -1,3 +1,4 @@
+ #include <algorithm>
++#include <cstdint>
+ #include <iomanip>
+ #include <sstream>
+PATCH
+    fi
 }
