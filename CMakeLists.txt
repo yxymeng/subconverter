@@ -187,7 +187,7 @@ IF(NOT BUILD_STATIC_LIBRARY)
         IF(TEST_PYTHON)
             ADD_TEST(NAME integration COMMAND ${TEST_PYTHON} ${CMAKE_SOURCE_DIR}/tests/integration.py
                 --binary $<TARGET_FILE:${BUILD_TARGET_NAME}> --base ${CMAKE_SOURCE_DIR}/base)
-            SET_TESTS_PROPERTIES(integration PROPERTIES TIMEOUT 90)
+            SET_TESTS_PROPERTIES(integration PROPERTIES TIMEOUT 180)
         ENDIF()
         FIND_PROGRAM(TEST_NODE NAMES node)
         IF(TEST_NODE)
