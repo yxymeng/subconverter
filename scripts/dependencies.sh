@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Source this file from a release script. Git submodules follow the pinned parent.
+# Keep pinned dependencies with older policy versions configurable on CMake 4.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
 QUICKJSPP_REF=01cdd3047ced48265b127790848a0ca88204f2c7
 LIBCRON_REF=ee34810b11bd23c8be637345532f91059b68b2d7
 YAML_CPP_REF=f7320141120f720aecc4c32be25586e7da9eb978
