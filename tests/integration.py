@@ -82,13 +82,16 @@ class Source:
 
 class App:
     def __init__(self, extra='', asynchronous=True, parallel=4, proxy='NONE', default_url='',
-                 listen='127.0.0.1', fallback=True, template='base/fixture.yml', workers=8):
+                 listen='127.0.0.1', fallback=True, template='base/fixture.yml', workers=8,
+                 port=None, origin_host='127.0.0.1'):
         self.temp = tempfile.TemporaryDirectory(prefix='subconverter-test-')
         self.root = Path(self.temp.name)
         shutil.copytree(BASE, self.root, dirs_exist_ok=True)
         (self.root / 'base' / 'fixture.yml').write_text('port: 7890\nproxies: []\nproxy-groups: []\nrules: []\n')
-        with socket.socket() as s:
-            s.bind(('127.0.0.1', 0)); self.port = s.getsockname()[1]
+        if port is None:
+            with socket.socket() as s:
+                s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
+        self.port = port
         self.pref = self.root / 'fixture.ini'
         self.pref.write_text(f'''[common]
 api_mode=true
@@ -126,7 +129,7 @@ skip_failed_links=true
 ''')
         self.log = open(self.root / 'stderr.log', 'wb')
         self.process = subprocess.Popen([str(BINARY), '-f', str(self.pref)], stdout=subprocess.DEVNULL, stderr=self.log)
-        self.origin = 'http://127.0.0.1:' + str(self.port)
+        self.origin = 'http://' + origin_host + ':' + str(self.port)
         for _ in range(100):
             if self.process.poll() is not None: raise RuntimeError((self.root/'stderr.log').read_text())
             try:
@@ -412,6 +415,28 @@ class Integration(unittest.TestCase):
         bound=self.app()
         status,report,_=bound.request(f'http://localhost:{bound.port}/sub?target=clash')
         self.assertGreaterEqual(status,400,report); self.assertIn('Self-referencing',str(report))
+    def test_self_request_uses_concrete_hostname_binding(self):
+        addresses={address[4][0] for address in socket.getaddrinfo('localhost',None,socket.AF_UNSPEC,socket.SOCK_STREAM)}
+        if not {'127.0.0.1','::1'}.issubset(addresses): self.skipTest('localhost does not resolve to both loopback families')
+        try:
+            with socket.socket(socket.AF_INET6,socket.SOCK_STREAM) as probe:
+                probe.bind(('::1',self.source.server.server_port))
+        except OSError as error: self.skipTest('IPv6 loopback unavailable: '+str(error))
+        app=self.app(listen='localhost',port=self.source.server.server_port,origin_host='[::1]',workers=2)
+        status,report,_=app.request(self.source.origin+'/sub',refresh='true')
+        self.assertEqual(status,200,report)
+        self.assertIn('fixture-node',report['output'])
+        self.assertEqual(self.source.counts['/sub'],1)
+        destination=app.origin+'/sub?target=clash'
+        self.source.routes['/bound-redirect']=(302,b'',0,{'Location':destination})
+        for source in (destination,self.source.origin+'/bound-redirect'):
+            status,report,_=app.request(source,refresh='true')
+            self.assertGreaterEqual(status,400,report)
+            self.assertIn('Self-referencing',str(report))
+            self.assertEqual(report['downloads'][0]['attempts'],1)
+        self.assertEqual(self.source.counts['/bound-redirect'],1)
+        self.assertEqual(get(app.origin+'/status')[0],200)
+
     def test_self_request_keeps_bound_endpoint_after_config_reload(self):
         for automatic in (False,True):
             app=self.app(listen='0.0.0.0',parallel=2,fallback=False,workers=2)

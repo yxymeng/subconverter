@@ -13,6 +13,7 @@
 #include "webserver.h"
 #include "handler/diagnostics.h"
 #include "handler/interfaces.h"
+#include "handler/settings.h"
 
 static const char *request_header_blacklist[] = {"host", "accept", "accept-encoding"};
 
@@ -114,8 +115,10 @@ static httplib::Server::Handler makeHandler(const responseRoute &rr)
 int WebServer::start_web_server_multi(listener_args *args)
 {
     httplib::Server server;
+    socket_t listener_socket = INVALID_SOCKET;
     // A second instance must fail instead of sharing the port through SO_REUSEPORT.
-    server.set_socket_options([](socket_t socket) {
+    server.set_socket_options([&listener_socket](socket_t socket) {
+        listener_socket = socket;
 #ifdef _WIN32
         int exclusive = 1;
         setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&exclusive), sizeof(exclusive));
@@ -258,6 +261,19 @@ int WebServer::start_web_server_multi(listener_args *args)
             "; check the listen address and whether the port is already in use", LOG_LEVEL_FATAL);
         return -1;
     }
+    sockaddr_storage bound_address {};
+    socklen_t bound_length = sizeof(bound_address);
+    char bound_host[NI_MAXHOST], bound_port[NI_MAXSERV];
+    if(getsockname(listener_socket, reinterpret_cast<sockaddr *>(&bound_address), &bound_length) != 0 ||
+       getnameinfo(reinterpret_cast<sockaddr *>(&bound_address), bound_length, bound_host, sizeof(bound_host),
+           bound_port, sizeof(bound_port), NI_NUMERICHOST | NI_NUMERICSERV) != 0)
+    {
+        httplib::detail::close_socket(listener_socket);
+        writeLog(0, "Cannot determine the bound listener endpoint", LOG_LEVEL_FATAL);
+        return -1;
+    }
+    global.boundListenAddress = bound_host;
+    global.boundListenPort = to_int(bound_port);
     writeLog(0, "Startup completed. Serving HTTP @ http://" + args->listen_address + ":" + std::to_string(args->port), LOG_LEVEL_INFO);
 
     std::thread thread([&]()
