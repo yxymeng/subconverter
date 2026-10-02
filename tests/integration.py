@@ -256,6 +256,41 @@ class Integration(unittest.TestCase):
             status,report,_=app.request(self.source.origin+'/sub',self.config([prefix+rule]),refresh='true')
             self.assertEqual(status,502,report)
 
+    def test_surge_source_ruleset_types_and_cache(self):
+        app=self.app(extra='[common]\nsurge_rule_base=base/surge.conf')
+        rule=self.source.origin+'/surge-rule'
+        bodies=[b'IP-ASN,13335\n',b'IP-ASN,13335,no-resolve\n',
+                b'DOMAIN-WILDCARD,*.example.com\n',b'PROTOCOL,UDP\n',
+                b'SCRIPT,fixture-script\n',b'CELLULAR-RADIO,LTE\n',b'CELLULAR-CARRIER,289-67\n']
+        for prefix in ('','surge:'):
+            config=self.config([prefix+rule])
+            for body in bodies:
+                with self.subTest(prefix=prefix,body=body):
+                    self.source.routes['/surge-rule']=(200,body,0)
+                    status,report,_=app.request(self.source.origin+'/sub',config,target='surge',ver='4',refresh='true')
+                    self.assertEqual(status,200,report)
+                    self.assertIn('RULE-SET,'+rule+',DIRECT',report['output'])
+                    self.assertTrue(any(entry.read_bytes().endswith(body) for entry in (app.root/'cache').glob('v2-*')))
+                    before=self.source.counts['/surge-rule']
+                    status,report,_=app.request(self.source.origin+'/sub',config,target='surge',ver='4')
+                    self.assertEqual(status,200,report)
+                    self.assertEqual(self.source.counts['/surge-rule'],before)
+                    self.assertIn('hit',[d['cache'] for d in report['downloads'] if d['phase']=='rules_download'])
+        previous_cache={entry:entry.read_bytes() for entry in (app.root/'cache').glob('v2-*') if entry.read_bytes().endswith(bodies[-1])}
+        for body in (b'IP-ASN,\n',b'IP-ASN,invalid\n',b'IP-ASN,-1\n',b'IP-ASN,4294967296\n',
+                     b'DOMAIN-WILDCARD,<html>error</html>\n',b'UNKNOWN,pattern\n',b'{"error":"unavailable"}\n'):
+            with self.subTest(invalid=body):
+                self.source.routes['/surge-rule']=(200,body,0)
+                status,report,_=app.request(self.source.origin+'/sub',config,target='surge',ver='4',refresh='true')
+                self.assertEqual(status,502,report)
+                self.assertIn('Invalid ruleset content',str(report['downloads']))
+                for entry,content in previous_cache.items(): self.assertEqual(entry.read_bytes(),content)
+                before=self.source.counts['/surge-rule']
+                status,report,_=app.request(self.source.origin+'/sub',config,target='surge',ver='4',use_stale='true')
+                self.assertEqual(status,200,report)
+                self.assertEqual(self.source.counts['/surge-rule'],before)
+                self.assertIn('stale',[d['cache'] for d in report['downloads'] if d['phase']=='rules_download'])
+
     def test_refresh_takes_priority_over_manual_stale(self):
         app=self.app()
         config=self.config([self.source.origin+'/rule'])

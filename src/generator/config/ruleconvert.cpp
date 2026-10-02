@@ -105,6 +105,12 @@ std::string convertRuleset(const std::string &content, int type)
 
 bool validRuleset(const std::string &content, int type)
 {
+    // Native source rules can be passed through even when an exporter cannot inline them.
+    static const string_array surge_source_types = {
+        basic_types, "IP-CIDR6", "IP-ASN", "DOMAIN-WILDCARD", "USER-AGENT", "URL-REGEX",
+        "AND", "OR", "NOT", "PROCESS-NAME", "IN-PORT", "DEST-PORT", "SRC-IP", "PROTOCOL",
+        "SCRIPT", "CELLULAR-RADIO", "CELLULAR-CARRIER"
+    };
     if(content.empty()) return false;
     if(type == RULESET_CLASH_DOMAIN || type == RULESET_CLASH_IPCIDR || type == RULESET_CLASH_CLASSICAL)
     {
@@ -138,7 +144,8 @@ bool validRuleset(const std::string &content, int type)
         const auto known = [&](const string_array &types) {
             return std::find(types.begin(), types.end(), rule) != types.end();
         };
-        if(!known(SurgeRuleTypes) && !known(ClashRuleTypes) && !known(QuanXRuleTypes) && !known(SingBoxRuleTypes)) return false;
+        const bool native_source = type == RULESET_SURGE && known(surge_source_types);
+        if(!native_source && !known(SurgeRuleTypes) && !known(ClashRuleTypes) && !known(QuanXRuleTypes) && !known(SingBoxRuleTypes)) return false;
         if(type == RULESET_CLASH_IPCIDR && !startsWith(rule, "IP-CIDR")) return false;
         if(comma == std::string::npos)
         {
@@ -147,8 +154,14 @@ bool validRuleset(const std::string &content, int type)
         else
         {
             const auto pattern = trimWhitespace(line.substr(comma + 1, line.find(',', comma + 1) - comma - 1), true, true);
-            if(pattern.empty() || ((rule == "DOMAIN" || rule == "DOMAIN-SUFFIX" || rule == "DOMAIN-KEYWORD") &&
+            if(pattern.empty() || ((rule == "DOMAIN" || rule == "DOMAIN-SUFFIX" || rule == "DOMAIN-KEYWORD" || rule == "DOMAIN-WILDCARD") &&
                 pattern.find_first_of("<> \t\r\n/") != std::string::npos)) return false;
+            if(rule == "IP-ASN")
+            {
+                unsigned int asn = 0;
+                const auto parsed = std::from_chars(pattern.data(), pattern.data() + pattern.size(), asn);
+                if(parsed.ec != std::errc() || parsed.ptr != pattern.data() + pattern.size()) return false;
+            }
             const bool cidr_rule = rule == "IP-CIDR" || rule == "IP-CIDR6" || rule == "SRC-IP-CIDR";
             if(cidr_rule || rule == "SRC-IP")
             {
