@@ -77,9 +77,9 @@ class FetchExecutor
     std::vector<std::thread> workers;
     bool stopping = false;
 public:
-    FetchExecutor()
+    void ensureWorkers(int count)
     {
-        for(int i = 0; i < downloadSettings()->maxParallelDownloads; ++i)
+        for(size_t i = workers.size(); i < static_cast<size_t>(count); ++i)
             workers.emplace_back([this] {
                 while(true)
                 {
@@ -104,7 +104,11 @@ public:
     {
         auto task = std::make_shared<std::packaged_task<std::string()>>(std::move(fn));
         auto result = task->get_future().share();
-        { std::lock_guard<std::mutex> lock(mutex); tasks.emplace([task] { (*task)(); }); }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            ensureWorkers(downloadSettings()->maxParallelDownloads);
+            tasks.emplace([task] { (*task)(); });
+        }
         ready.notify_one();
         return result;
     }

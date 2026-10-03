@@ -261,7 +261,11 @@ class Integration(unittest.TestCase):
         rule=self.source.origin+'/surge-rule'
         bodies=[b'IP-ASN,13335\n',b'IP-ASN,13335,no-resolve\n',
                 b'DOMAIN-WILDCARD,*.example.com\n',b'PROTOCOL,UDP\n',
-                b'SCRIPT,fixture-script\n',b'CELLULAR-RADIO,LTE\n',b'CELLULAR-CARRIER,289-67\n']
+                b'SCRIPT,fixture-script\n',b'CELLULAR-RADIO,LTE\n',b'CELLULAR-CARRIER,289-67\n',
+                b'DEVICE-NAME,fixture-device\n',b'MAC-ADDRESS,aa:bb:cc:dd:ee:ff\n',
+                b'HOSTNAME-TYPE,IPv6\n',b'SUBNET,TYPE:CELLULAR\n',
+                b'DOMAIN-SET,https://example.com/domains.txt\n',b'RULE-SET,https://example.com/rules.txt\n',
+                b'IP-CIDR6,2404:6800::\n',b'IP-CIDR,192.0.2.1\n']
         for prefix in ('','surge:'):
             config=self.config([prefix+rule])
             for body in bodies:
@@ -278,6 +282,7 @@ class Integration(unittest.TestCase):
                     self.assertIn('hit',[d['cache'] for d in report['downloads'] if d['phase']=='rules_download'])
         previous_cache={entry:entry.read_bytes() for entry in (app.root/'cache').glob('v2-*') if entry.read_bytes().endswith(bodies[-1])}
         for body in (b'IP-ASN,\n',b'IP-ASN,invalid\n',b'IP-ASN,-1\n',b'IP-ASN,4294967296\n',
+                     b'IP-CIDR6,2404:6800:::1\n',b'IP-CIDR6,192.0.2.1\n',b'IP-CIDR,999.0.0.1\n',
                      b'DOMAIN-WILDCARD,<html>error</html>\n',b'UNKNOWN,pattern\n',b'{"error":"unavailable"}\n'):
             with self.subTest(invalid=body):
                 self.source.routes['/surge-rule']=(200,body,0)
@@ -409,6 +414,42 @@ class Integration(unittest.TestCase):
         self.assertLessEqual(self.source.peak,3); self.assertGreater(self.source.peak,1)
         positions=[report['output'].index(f'rule-{i}.example') for i in range(12)]
         self.assertEqual(positions,sorted(positions))
+    def test_parallel_download_limit_after_reload(self):
+        for mode in ('readconf','updateconf','automatic'):
+            with self.subTest(mode=mode):
+                app=self.app(parallel=2)
+                if mode=='automatic':
+                    initial=app.pref.read_text().replace('api_mode=true','api_mode=false').replace('[common]\n','[common]\nreload_conf_on_request=true\n')
+                    app.pref.write_text(initial)
+                    self.assertEqual(get(app.origin+'/readconf')[0],200)
+                urls=[]
+                for i in range(12):
+                    path=f'/reload-rule-{mode}-{i}'; urls.append(self.source.origin+path)
+                    self.source.routes[path]=(200,f'DOMAIN,reload-{i}.example\n'.encode(),.15)
+                config=self.config(urls)
+                status,report,_=app.request(self.source.origin+'/sub',config,refresh='true')
+                self.assertEqual(status,200,report)
+                previous_limit=2
+                for limit in (6,1,4):
+                    previous=app.pref.read_text()
+                    updated=previous.replace('max_parallel_downloads='+str(previous_limit),'max_parallel_downloads='+str(limit))
+                    if mode=='updateconf':
+                        connection=http.client.HTTPConnection('127.0.0.1',app.port,timeout=10)
+                        connection.request('POST','/updateconf?type=direct',updated.encode())
+                        response=connection.getresponse(); self.assertEqual(response.status,200,response.read()); connection.close()
+                    else:
+                        app.pref.write_text(updated)
+                        if mode=='readconf': self.assertEqual(get(app.origin+'/readconf')[0],200)
+                    with self.source.lock: self.source.peak=0
+                    status,report,_=app.request(self.source.origin+'/sub',config,refresh='true')
+                    self.assertEqual(status,200,report)
+                    self.assertEqual(json.loads(get(app.origin+'/status')[1])['max_parallel_downloads'],limit)
+                    self.assertLessEqual(self.source.peak,limit)
+                    self.assertGreater(self.source.peak,2 if limit>2 else 0)
+                    positions=[report['output'].index(f'reload-{i}.example') for i in range(12)]
+                    self.assertEqual(positions,sorted(positions))
+                    previous_limit=limit
+
     def test_startup_check_port_conflict_and_bad_config(self):
         app=self.app()
         result=subprocess.run([str(BINARY),'-f',str(app.pref),'--check'],capture_output=True,text=True)

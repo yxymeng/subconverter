@@ -109,7 +109,8 @@ bool validRuleset(const std::string &content, int type)
     static const string_array surge_source_types = {
         basic_types, "IP-CIDR6", "IP-ASN", "DOMAIN-WILDCARD", "USER-AGENT", "URL-REGEX",
         "AND", "OR", "NOT", "PROCESS-NAME", "IN-PORT", "DEST-PORT", "SRC-IP", "PROTOCOL",
-        "SCRIPT", "CELLULAR-RADIO", "CELLULAR-CARRIER"
+        "SCRIPT", "CELLULAR-RADIO", "CELLULAR-CARRIER", "DEVICE-NAME", "MAC-ADDRESS",
+        "HOSTNAME-TYPE", "SUBNET", "DOMAIN-SET", "RULE-SET"
     };
     if(content.empty()) return false;
     if(type == RULESET_CLASH_DOMAIN || type == RULESET_CLASH_IPCIDR || type == RULESET_CLASH_CLASSICAL)
@@ -166,7 +167,8 @@ bool validRuleset(const std::string &content, int type)
             if(cidr_rule || rule == "SRC-IP")
             {
                 const auto slash = pattern.find('/');
-                if(cidr_rule && slash == std::string::npos) return false;
+                if(cidr_rule && slash == std::string::npos &&
+                   !(native_source && (rule == "IP-CIDR" || rule == "IP-CIDR6"))) return false;
                 const auto address = pattern.substr(0, slash);
                 const int family = rule == "IP-CIDR" ? AF_INET : rule == "IP-CIDR6" ? AF_INET6 :
                     (address.find(':') == std::string::npos ? AF_INET : AF_INET6);
