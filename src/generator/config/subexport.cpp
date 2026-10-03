@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "handler/diagnostics.h"
 #include <iostream>
 #include <numeric>
 #include <cmath>
@@ -585,6 +586,7 @@ void proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGr
         nodelist.emplace_back(x);
     }
 
+    recordMetric("nodes_exported", proxies.size());
     if(proxy_compact)
         proxies.SetStyle(YAML::EmitterStyle::Flow);
 
@@ -2556,6 +2558,7 @@ void proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::v
         outbounds.PushBack(proxy, allocator);
     }
 
+    recordMetric("nodes_exported", nodelist.size());
     if (ext.nodelist)
     {
         json | AddMemberOrReplace("outbounds", outbounds, allocator);

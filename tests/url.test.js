@@ -1,0 +1,15 @@
+'use strict';
+const assert = require('node:assert/strict');
+const api = require('../base/web/converter.js');
+const original = 'https://old.example/sub?' + new URLSearchParams({target:'clash',url:'https://a.example/sub?token=x%2Fy&flag=1|trojan://p@host:443#香港',config:'https://c.example/规则.ini?x=1&y=2',include:'港|台',emoji:'false',new_name:'true',interval:'86400'});
+const restored = api.restore(original);
+const rebuilt = new URL(api.build('http://192.168.1.10:25500',restored.values,restored.extra));
+assert.equal(rebuilt.origin,'http://192.168.1.10:25500');
+assert.deepEqual([...rebuilt.searchParams].sort(),[...new URL(original).searchParams].sort());
+assert.equal(api.restore(rebuilt.toString()).values.url,restored.values.url);
+assert.equal(new URL(api.build('http://localhost', {target:'clash',url:' \n '})).searchParams.has('url'),false);
+const defaultSubscription=api.restore('http://localhost/sub?target=clash');
+assert.equal(new URL(api.build('http://localhost',defaultSubscription.values,defaultSubscription.extra)).search,'?target=clash');
+assert.throws(()=>api.restore('javascript:alert(1)'));
+assert.throws(()=>api.restore('https://example.com/unrelated'));
+console.log('URL encoding, restoration and same-origin cases passed');

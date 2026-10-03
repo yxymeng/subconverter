@@ -1,4 +1,7 @@
 #include <iostream>
+#include <filesystem>
+#include <nlohmann/json.hpp>
+#include "handler/diagnostics.h"
 #include <string>
 #include <unistd.h>
 #include <csignal>
@@ -25,6 +28,7 @@
 //#include "vfs.h"
 
 WebServer webServer;
+static std::string actual_config_path;
 
 #ifndef _WIN32
 void SetConsoleTitle(const std::string &title)
@@ -113,6 +117,21 @@ void cron_tick_caller()
         cron_tick();
 }
 
+static nlohmann::json startupReport()
+{
+    const auto settings = downloadSettings();
+    const auto proxy = [](const std::string &setting) {
+        auto resolved = parseProxy(setting);
+        return nlohmann::json {{"mode", setting == "NONE" || setting.empty() ? "direct" : setting == "SYSTEM" ? "system" : "explicit"},
+            {"selected", resolved.empty() ? "direct" : safeSource(resolved)}};
+    };
+    return {{"version", VERSION}, {"build_commit", BUILD_COMMIT},
+        {"config", actual_config_path}, {"listen", global.listenAddress}, {"port", global.listenPort},
+        {"proxies", {{"subscription", proxy(global.proxySubscription)}, {"config", proxy(global.proxyConfig)}, {"ruleset", proxy(global.proxyRuleset)}}},
+        {"max_parallel_downloads", settings->maxParallelDownloads}, {"download_timeout", settings->downloadTimeout},
+        {"connect_timeout", settings->connectTimeout}};
+}
+
 int main(int argc, char *argv[])
 {
 #ifndef _DEBUG
@@ -139,6 +158,7 @@ int main(int argc, char *argv[])
             fileCopy("pref.example.ini", "pref.ini");
     }
     chkArg(argc, argv);
+    actual_config_path = std::filesystem::absolute(global.prefPath).string();
     setcd(global.prefPath); //then switch to pref directory
     writeLog(0, "SubConverter " VERSION " starting up..", LOG_LEVEL_INFO);
 #ifdef _WIN32
@@ -161,11 +181,16 @@ int main(int argc, char *argv[])
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
 
-    SetConsoleTitle("SubConverter " VERSION);
-    readConf();
+    bool check_only = false;
+    for(int i = 1; i < argc; ++i) if(std::string(argv[i]) == "--check") check_only = true;
+    if(!check_only) SetConsoleTitle("SubConverter " VERSION);
+    if(!readConf()) return 1;
+    const auto configured_port = getEnv("PORT");
+    if(!configured_port.empty()) global.listenPort = to_int(configured_port, global.listenPort);
+    if(global.listenPort < 1 || global.listenPort > 65535) { writeLog(0, "Invalid listening port", LOG_LEVEL_FATAL); return 1; }
+    if(check_only) { std::cout << startupReport().dump(2) << "\n"; return 0; }
     //vfs::vfs_read("vfs.ini");
-    if(!global.updateRulesetOnRequest)
-        refreshRulesets(global.customRulesets, global.rulesetsContent);
+    // Rules are evaluated against their TTL when a conversion needs them.
 
     std::string env_api_mode = getEnv("API_MODE"), env_managed_prefix = getEnv("MANAGED_PREFIX"), env_token = getEnv("API_TOKEN");
     global.APIMode = tribool().parse(toLower(env_api_mode)).get(global.APIMode);
@@ -200,7 +225,12 @@ int main(int argc, char *argv[])
                 return "Forbidden\n";
             }
         }
-        refreshRulesets(global.customRulesets, global.rulesetsContent);
+        if(auto context = currentDiagnostics()) context->force_refresh = true;
+        PhaseTimer rules_timer("rules_download");
+        std::vector<RulesetContent> refreshed;
+        refreshRulesets(global.customRulesets, refreshed);
+        for(auto &ruleset : refreshed)
+            if(ruleset.rule_content.get().empty()) throw std::runtime_error("Required ruleset update failed (" + safeSource(ruleset.rule_path) + ")");
         return "done\n";
     });
 
@@ -215,7 +245,11 @@ int main(int argc, char *argv[])
                 return "Forbidden\n";
             }
         }
-        readConf();
+        if(!readConf())
+        {
+            response.status_code = 400;
+            return "Failed to reload configuration\n";
+        }
         if(!global.updateRulesetOnRequest)
             refreshRulesets(global.customRulesets, global.rulesetsContent);
         return "done\n";
@@ -235,7 +269,11 @@ int main(int argc, char *argv[])
         std::string type = getUrlArg(request.argument, "type");
         if(type == "form" || type == "direct")
         {
-            fileWrite(global.prefPath, request.postdata, true);
+            if(!readConf(&request.postdata))
+            {
+                response.status_code = 400;
+                return "Failed to reload configuration\n";
+            }
         }
         else
         {
@@ -243,7 +281,6 @@ int main(int argc, char *argv[])
             return "Not Implemented\n";
         }
 
-        readConf();
         if(!global.updateRulesetOnRequest)
             refreshRulesets(global.customRulesets, global.rulesetsContent);
         return "done\n";
@@ -259,6 +296,12 @@ int main(int argc, char *argv[])
         flushCache();
         return "done";
     });
+
+    webServer.append_response("GET", "/status", "application/json", [](RESPONSE_CALLBACK_ARGS) -> std::string
+    {
+        return startupReport().dump();
+    });
+    webServer.append_response("GET", "/diagnose", "application/json", subconverter);
 
     webServer.append_response("GET", "/sub", "text/plain;charset=utf-8", subconverter);
 
@@ -296,12 +339,13 @@ int main(int argc, char *argv[])
     if(!env_port.empty())
         global.listenPort = to_int(env_port, global.listenPort);
     listener_args args = {global.listenAddress, global.listenPort, global.maxPendingConns, global.maxConcurThreads, cron_tick_caller, 200};
+    global.boundListenAddress = args.listen_address;
+    global.boundListenPort = args.port;
     //std::cout<<"Serving HTTP @ http://"<<listen_address<<":"<<listen_port<<std::endl;
-    writeLog(0, "Startup completed. Serving HTTP @ http://" + global.listenAddress + ":" + std::to_string(global.listenPort), LOG_LEVEL_INFO);
-    webServer.start_web_server_multi(&args);
+    const int server_result = webServer.start_web_server_multi(&args);
 
 #ifdef _WIN32
     WSACleanup();
 #endif // _WIN32
-    return 0;
+    return server_result == 0 ? 0 : 1;
 }

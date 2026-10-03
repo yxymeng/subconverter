@@ -8,6 +8,7 @@
 #include "handler/interfaces.h"
 #include "handler/settings.h"
 #include "handler/webget.h"
+#include "handler/diagnostics.h"
 #include "utils/logger.h"
 #include "utils/network.h"
 #include "utils/regexp.h"
@@ -79,6 +80,11 @@ std::string template_webGet(inja::Arguments &args)
 
 int render_template(const std::string &content, const template_args &vars, std::string &output, const std::string &include_scope)
 {
+    if(content.empty() && currentDiagnostics() && currentPhase() == "export")
+    {
+        output = "Base template could not be loaded";
+        return -1;
+    }
     std::string absolute_scope;
     try
     {

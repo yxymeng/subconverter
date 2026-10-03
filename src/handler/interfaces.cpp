@@ -28,6 +28,7 @@
 #include "settings.h"
 #include "upload.h"
 #include "webget.h"
+#include "diagnostics.h"
 
 extern WebServer webServer;
 
@@ -40,6 +41,8 @@ std::string parseProxy(const std::string &source)
         proxy = getSystemProxy();
     else if(source == "NONE")
         proxy = "";
+    if(!proxy.empty() && proxy.find("://") == std::string::npos && !startsWith(proxy, "cors:"))
+        proxy = "http://" + proxy;
     return proxy;
 }
 
@@ -325,7 +328,13 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
     }
     //check if we need to read configuration
     if(global.reloadConfOnRequest && (!global.APIMode || global.CFWChildProcess) && !global.generatorMode)
-        readConf();
+    {
+        if(!readConf())
+        {
+            *status_code = 400;
+            return "Failed to reload configuration";
+        }
+    }
 
     /// string values
     std::string argUrl = getUrlArg(argument, "url");
@@ -447,6 +456,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
     {
         //std::cerr<<"External configuration file provided. Loading...\n";
         writeLog(0, "External configuration file provided. Loading...", LOG_LEVEL_INFO);
+        PhaseTimer configuration_timer("external_config");
         ExternalConfig extconf;
         extconf.tpl_args = &tpl_args;
         if(loadExternalConfig(argExternalConfig, extconf) == 0)
@@ -484,6 +494,11 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
             argAddEmoji.define(extconf.add_emoji);
             argRemoveEmoji.define(extconf.remove_old_emoji);
         }
+        else
+        {
+            *status_code = 502;
+            return "External configuration could not be downloaded or parsed (" + safeSource(argExternalConfig) + ")";
+        }
     }
     else
     {
@@ -506,14 +521,15 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
     }
     if(ext.enable_rule_generator && !ext.nodelist && !lSimpleSubscription)
     {
-        if(lCustomRulesets != global.customRulesets)
-            refreshRulesets(lCustomRulesets, lRulesetContent);
-        else
-        {
-            if(global.updateRulesetOnRequest)
-                refreshRulesets(global.customRulesets, global.rulesetsContent);
-            lRulesetContent = global.rulesetsContent;
-        }
+        PhaseTimer rules_timer("rules_download");
+        // Re-evaluate TTL on every conversion instead of retaining startup futures forever.
+        refreshRulesets(lCustomRulesets, lRulesetContent);
+        std::string unavailable;
+        for(auto &ruleset : lRulesetContent)
+            if(ruleset.rule_content.get().empty()) unavailable += safeSource(ruleset.rule_path) + " ";
+        if(!unavailable.empty())
+            throw std::runtime_error("Required ruleset unavailable: " + unavailable +
+                ". Previous successful cache is preserved; retry with use_stale=true to explicitly use it.");
     }
 
     if(!argEmoji.is_undef())
@@ -627,11 +643,15 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
             if(addNodes(x, insert_nodes, groupID, parse_set) == -1)
             {
                 if(global.skipFailedLinks)
-                    writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
+                {
+                    const auto error = parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
+                    recordWarning(error);
+                    writeLog(0, error, LOG_LEVEL_WARNING);
+                }
                 else
                 {
                     *status_code = 400;
-                    return "The following link doesn't contain any valid node info: " + x;
+                    return parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
                 }
             }
             groupID--;
@@ -650,11 +670,15 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
         if(addNodes(x, nodes, groupID, parse_set) == -1)
         {
             if(global.skipFailedLinks)
-                writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
+            {
+                const auto error = parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
+                recordWarning(error);
+                writeLog(0, error, LOG_LEVEL_WARNING);
+            }
             else
             {
                 *status_code = 400;
-                return "The following link doesn't contain any valid node info: " + x;
+                return parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
             }
         }
         groupID++;
@@ -663,7 +687,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
     if(nodes.empty() && insert_nodes.empty())
     {
         *status_code = 400;
-        return "No nodes were found!";
+        return parse_set.error.empty() ? "No nodes remain after parsing and filtering" : parse_set.error;
     }
     if(!subInfo.empty() && argAppendUserinfo.get(global.appendUserinfo))
         response.headers.emplace("Subscription-UserInfo", subInfo);
@@ -732,6 +756,8 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
         for(Proxy &x : nodes)
             x.Group = argGroupName;
 
+    recordMetric("nodes_parsed", nodes.size());
+
     //do pre-process now
     preprocessNodes(nodes, ext);
 
@@ -757,6 +783,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
 
     //std::cerr<<"Generate target: ";
     proxy = parseProxy(global.proxyConfig);
+    PhaseTimer export_timer("export");
     switch(hash_(argTarget))
     {
     case "clash"_hash: case "clashr"_hash:
@@ -956,6 +983,17 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS)
         *status_code = 500;
         return "Unrecognized target";
     }
+    if(auto context = currentDiagnostics())
+    {
+        std::lock_guard<std::mutex> lock(context->mutex);
+        if(context->metrics.contains("nodes_exported") && context->metrics["nodes_exported"] == 0)
+        {
+            *status_code = 422;
+            return "No nodes can be exported to the selected target";
+        }
+    }
+    if(output_content.empty()) { *status_code = 422; return "No nodes can be exported to the selected target"; }
+    recordMetric("output_bytes", output_content.size());
     writeLog(0, "Generate completed.", LOG_LEVEL_INFO);
     if(!argFilename.empty())
         response.headers.emplace("Content-Disposition", "attachment; filename=\"" + argFilename + "\"; filename*=utf-8''" + urlEncode(argFilename));
@@ -1097,11 +1135,15 @@ std::string surgeConfToClash(RESPONSE_CALLBACK_ARGS)
         if(addNodes(x, nodes, 0, parse_set) == -1)
         {
             if(global.skipFailedLinks)
-                writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
+            {
+                const auto error = parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
+                recordWarning(error);
+                writeLog(0, error, LOG_LEVEL_WARNING);
+            }
             else
             {
                 *status_code = 400;
-                return "The following link doesn't contain any valid node info: " + x;
+                return parse_set.error.empty() ? "No valid nodes found in " + safeSource(x) : parse_set.error;
             }
         }
     }
@@ -1110,7 +1152,7 @@ std::string surgeConfToClash(RESPONSE_CALLBACK_ARGS)
     if(nodes.empty())
     {
         *status_code = 400;
-        return "No nodes were found!";
+        return parse_set.error.empty() ? "No nodes remain after parsing and filtering" : parse_set.error;
     }
 
     extra_settings ext;
@@ -1459,6 +1501,7 @@ int simpleGenerator()
 
     string_multimap allItems;
     std::string proxy = parseProxy(global.proxySubscription);
+    bool failed = false;
     for(std::string &x : sections)
     {
         Request request;
@@ -1473,15 +1516,28 @@ int simpleGenerator()
         {
             //std::cerr<<"Artifact '"<<x<<"' output path missing! Skipping...\n\n";
             writeLog(0, "Artifact '" + x + "' output path missing! Skipping...\n", LOG_LEVEL_ERROR);
+            failed = true;
             continue;
         }
+        auto context = newDiagnostics();
+        context->force_refresh = ini.get_bool("refresh");
+        context->use_stale = ini.get_bool("use_stale");
+        DiagnosticScope diagnostics(context);
+        const auto convert = [&](auto callback) {
+            try { return callback(request, response); }
+            catch(const std::exception &error)
+            {
+                response.status_code = 502;
+                return redactForLog(error.what());
+            }
+        };
         if(ini.item_exist("profile"))
         {
             profile = ini.get("profile");
             request.argument.emplace("name", profile);
             request.argument.emplace("token", global.accessToken);
             request.argument.emplace("expand", "true");
-            content = getProfile(request, response);
+            content = convert(getProfile);
         }
         else
         {
@@ -1495,20 +1551,24 @@ int simpleGenerator()
                     writeLog(0, "Artifact '" + x + "' generate ERROR! Please check your link.\n", LOG_LEVEL_ERROR);
                     if(sections.size() == 1)
                         return -1;
+                    failed = true;
+                    continue;
                 }
                 // add UTF-8 BOM
-                fileWrite(path, "\xEF\xBB\xBF" + content, true);
-                continue;
+                content = "\xEF\xBB\xBF" + content;
             }
-            ini.get_items(allItems);
-            allItems.emplace("expand", "true");
-            for(auto &y : allItems)
+            else
             {
-                if(y.first == "path")
-                    continue;
-                request.argument.emplace(y.first, y.second);
+                ini.get_items(allItems);
+                allItems.emplace("expand", "true");
+                for(auto &y : allItems)
+                {
+                    if(y.first == "path")
+                        continue;
+                    request.argument.emplace(y.first, y.second);
+                }
+                content = convert(subconverter);
             }
-            content = subconverter(request, response);
         }
         if(response.status_code != 200)
         {
@@ -1516,9 +1576,17 @@ int simpleGenerator()
             writeLog(0, "Artifact '" + x + "' generate ERROR! Reason: " + content + "\n", LOG_LEVEL_ERROR);
             if(sections.size() == 1)
                 return -1;
+            failed = true;
             continue;
         }
-        fileWrite(path, content, true);
+        if(fileWriteAtomic(path, content) != 0)
+        {
+            writeLog(0, "Artifact '" + x + "' generate ERROR! Cannot write output file.\n", LOG_LEVEL_ERROR);
+            if(sections.size() == 1)
+                return -1;
+            failed = true;
+            continue;
+        }
         auto iter = std::find_if(response.headers.begin(), response.headers.end(), [](auto y){ return y.first == "Subscription-UserInfo"; });
         if(iter != response.headers.end())
             writeLog(0, "User Info for artifact '" + x + "': " + subInfoToMessage(iter->second), LOG_LEVEL_INFO);
@@ -1528,7 +1596,7 @@ int simpleGenerator()
     }
     //std::cerr<<"All artifact generated. Exiting...\n";
     writeLog(0, "All artifact generated. Exiting...", LOG_LEVEL_INFO);
-    return 0;
+    return failed ? -1 : 0;
 }
 
 std::string renderTemplate(RESPONSE_CALLBACK_ARGS)

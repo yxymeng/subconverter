@@ -1,10 +1,100 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <array>
+#include <cstring>
 
 #include "server/socket.h"
+#ifdef _WIN32
+#include <iphlpapi.h>
+#else
+#include <ifaddrs.h>
+#endif
 #include "string.h"
 #include "regexp.h"
+#include "defer.h"
+
+bool hostPointsToLocalServer(std::string host, const std::string &listen_address)
+{
+    if(host.size() > 1 && host.front() == '[' && host.back() == ']')
+        host = host.substr(1, host.size() - 2);
+    const bool wildcard = listen_address == "0.0.0.0" || listen_address == "::";
+    addrinfo hints {}, *targets = nullptr;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
+    if(getaddrinfo(host.c_str(), nullptr, &hints, &targets) != 0) return false;
+    defer(freeaddrinfo(targets);)
+    const auto ipv4 = [](const sockaddr *address) {
+        return address->sa_family == AF_INET || (address->sa_family == AF_INET6 &&
+            IN6_IS_ADDR_V4MAPPED(&reinterpret_cast<const sockaddr_in6 *>(address)->sin6_addr));
+    };
+    const auto key = [](const sockaddr *address) {
+        std::array<unsigned char, 16> bytes {};
+        if(address->sa_family == AF_INET6)
+            std::memcpy(bytes.data(), &reinterpret_cast<const sockaddr_in6 *>(address)->sin6_addr, 16);
+        else if(address->sa_family == AF_INET)
+        {
+            bytes[10] = bytes[11] = 0xff;
+            std::memcpy(bytes.data() + 12, &reinterpret_cast<const sockaddr_in *>(address)->sin_addr, 4);
+        }
+        return bytes;
+    };
+    const auto matches = [&](const sockaddr *address) {
+        if(!address || (address->sa_family != AF_INET && address->sa_family != AF_INET6)) return false;
+        if(listen_address == "0.0.0.0" && !ipv4(address)) return false;
+        for(auto *target = targets; target; target = target->ai_next)
+            if(key(target->ai_addr) == key(address)) return true;
+        return false;
+    };
+    bool local = false;
+    if(!wildcard)
+    {
+        addrinfo *bound = nullptr;
+        if(getaddrinfo(listen_address.c_str(), nullptr, &hints, &bound) == 0)
+        {
+            for(auto *address = bound; address; address = address->ai_next)
+                local = local || matches(address->ai_addr);
+            freeaddrinfo(bound);
+        }
+    }
+    else
+    {
+        for(auto *target = targets; target; target = target->ai_next)
+        {
+            const auto bytes = key(target->ai_addr);
+            const bool unspecified = bytes[12] == 0 && bytes[13] == 0 && bytes[14] == 0 && bytes[15] == 0;
+            local = local || (ipv4(target->ai_addr) && (bytes[12] == 127 || unspecified)) ||
+                (listen_address == "::" && target->ai_family == AF_INET6 &&
+                 (IN6_IS_ADDR_LOOPBACK(&reinterpret_cast<const sockaddr_in6 *>(target->ai_addr)->sin6_addr) ||
+                  IN6_IS_ADDR_UNSPECIFIED(&reinterpret_cast<const sockaddr_in6 *>(target->ai_addr)->sin6_addr)));
+        }
+#ifdef _WIN32
+        ULONG size = 16384;
+        std::vector<unsigned char> storage(size);
+        auto *adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES *>(storage.data());
+        ULONG status = GetAdaptersAddresses(AF_UNSPEC, 0, nullptr, adapters, &size);
+        if(status == ERROR_BUFFER_OVERFLOW)
+        {
+            storage.resize(size);
+            adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES *>(storage.data());
+            status = GetAdaptersAddresses(AF_UNSPEC, 0, nullptr, adapters, &size);
+        }
+        if(status == NO_ERROR)
+            for(auto *adapter = adapters; adapter; adapter = adapter->Next)
+                for(auto *address = adapter->FirstUnicastAddress; address; address = address->Next)
+                    local = local || matches(address->Address.lpSockaddr);
+#else
+        ifaddrs *interfaces = nullptr;
+        if(getifaddrs(&interfaces) == 0)
+        {
+            for(auto *address = interfaces; address; address = address->ifa_next)
+                local = local || matches(address->ifa_addr);
+            freeifaddrs(interfaces);
+        }
+#endif
+    }
+    return local;
+}
 
 std::string hostnameToIPAddr(const std::string &host)
 {

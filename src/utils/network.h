@@ -11,6 +11,7 @@ bool isIPv4(const std::string &address);
 bool isIPv6(const std::string &address);
 void urlParse(std::string &url, std::string &host, std::string &path, int &port, bool &isTLS);
 std::string hostnameToIPAddr(const std::string &host);
+bool hostPointsToLocalServer(std::string host, const std::string &listen_address);
 
 inline bool isLink(const std::string &url)
 {

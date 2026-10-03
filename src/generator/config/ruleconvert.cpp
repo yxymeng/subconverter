@@ -1,9 +1,17 @@
 #include <string>
+#include <charconv>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+#include "server/socket.h"
 #include "handler/settings.h"
 #include "utils/logger.h"
 #include "utils/network.h"
 #include "utils/regexp.h"
+#include "handler/diagnostics.h"
 #include "utils/string.h"
 #include "utils/rapidjson_extra.h"
 #include "subexport.h"
@@ -93,6 +101,91 @@ std::string convertRuleset(const std::string &content, int type)
         output = regReplace(output, "^((?i:DOMAIN(?:-(?:SUFFIX|KEYWORD))?|IP-CIDR6?|USER-AGENT),)\\s*?(\\S*?)(?:,(?!no-resolve).*?)(,no-resolve)?$", "\\U$1\\E$2${3:-}", true); //remove group
         return output;
     }
+}
+
+bool validRuleset(const std::string &content, int type)
+{
+    // Native source rules can be passed through even when an exporter cannot inline them.
+    static const string_array surge_source_types = {
+        basic_types, "IP-CIDR6", "IP-ASN", "DOMAIN-WILDCARD", "USER-AGENT", "URL-REGEX",
+        "AND", "OR", "NOT", "PROCESS-NAME", "IN-PORT", "DEST-PORT", "SRC-IP", "PROTOCOL",
+        "SCRIPT", "CELLULAR-RADIO", "CELLULAR-CARRIER", "DEVICE-NAME", "MAC-ADDRESS",
+        "HOSTNAME-TYPE", "SUBNET", "DOMAIN-SET", "RULE-SET"
+    };
+    if(content.empty()) return false;
+    if(type == RULESET_CLASH_DOMAIN || type == RULESET_CLASH_IPCIDR || type == RULESET_CLASH_CLASSICAL)
+    {
+        try
+        {
+            const auto payload = YAML::Load(content)["payload"];
+            if(!payload.IsSequence()) return false;
+            if(payload.size() == 0) return true;
+            for(const auto &entry : payload)
+            {
+                if(!entry.IsScalar()) return false;
+            }
+        }
+        catch(const YAML::Exception &) { return false; }
+    }
+    const auto converted = convertRuleset(content, type);
+    std::stringstream lines(converted);
+    std::string line;
+    bool found = false;
+    while(std::getline(lines, line, getLineBreak(converted)))
+    {
+        line = trimWhitespace(line, true, true);
+        if(line.empty()) continue;
+        found = true;
+        if(line[0] == '#' || line[0] == ';' || startsWith(line, "//")) continue;
+        auto comment = line.find(" //");
+        if(comment == std::string::npos) comment = line.find("\t//");
+        if(comment != std::string::npos) line = trimWhitespace(line.substr(0, comment), true, true);
+        const auto comma = line.find(',');
+        const auto rule = line.substr(0, comma);
+        const auto known = [&](const string_array &types) {
+            return std::find(types.begin(), types.end(), rule) != types.end();
+        };
+        const bool native_source = type == RULESET_SURGE && known(surge_source_types);
+        if(!native_source && !known(SurgeRuleTypes) && !known(ClashRuleTypes) && !known(QuanXRuleTypes) && !known(SingBoxRuleTypes)) return false;
+        if(type == RULESET_CLASH_IPCIDR && !startsWith(rule, "IP-CIDR")) return false;
+        if(comma == std::string::npos)
+        {
+            if(rule != "MATCH" && rule != "FINAL") return false;
+        }
+        else
+        {
+            const auto pattern = trimWhitespace(line.substr(comma + 1, line.find(',', comma + 1) - comma - 1), true, true);
+            if(pattern.empty() || ((rule == "DOMAIN" || rule == "DOMAIN-SUFFIX" || rule == "DOMAIN-KEYWORD" || rule == "DOMAIN-WILDCARD") &&
+                pattern.find_first_of("<> \t\r\n/") != std::string::npos)) return false;
+            if(rule == "IP-ASN")
+            {
+                unsigned int asn = 0;
+                const auto parsed = std::from_chars(pattern.data(), pattern.data() + pattern.size(), asn);
+                if(parsed.ec != std::errc() || parsed.ptr != pattern.data() + pattern.size()) return false;
+            }
+            const bool cidr_rule = rule == "IP-CIDR" || rule == "IP-CIDR6" || rule == "SRC-IP-CIDR";
+            if(cidr_rule || rule == "SRC-IP")
+            {
+                const auto slash = pattern.find('/');
+                if(cidr_rule && slash == std::string::npos &&
+                   !(native_source && (rule == "IP-CIDR" || rule == "IP-CIDR6"))) return false;
+                const auto address = pattern.substr(0, slash);
+                const int family = rule == "IP-CIDR" ? AF_INET : rule == "IP-CIDR6" ? AF_INET6 :
+                    (address.find(':') == std::string::npos ? AF_INET : AF_INET6);
+                in6_addr parsed_address {};
+                if(inet_pton(family, address.c_str(), &parsed_address) != 1) return false;
+                if(slash != std::string::npos)
+                {
+                    const auto mask = pattern.substr(slash + 1);
+                    unsigned int prefix = 0;
+                    const auto parsed = std::from_chars(mask.data(), mask.data() + mask.size(), prefix);
+                    if(parsed.ec != std::errc() || parsed.ptr != mask.data() + mask.size() ||
+                       prefix > (family == AF_INET ? 32u : 128u)) return false;
+                }
+            }
+        }
+    }
+    return found;
 }
 
 static std::string transformRuleToCommon(string_view_array &temp, const std::string &input, const std::string &group, bool no_resolve_only = false)
@@ -192,6 +285,7 @@ void rulesetToClash(YAML::Node &base_rule, std::vector<RulesetContent> &ruleset_
 
 std::string rulesetToClashStr(YAML::Node &base_rule, std::vector<RulesetContent> &ruleset_content_array, bool overwrite_original_rules, bool new_field_name)
 {
+    PhaseTimer processing_timer("rules_processing");
     std::string rule_group, retrieved_rules, strLine;
     std::stringstream strStrm;
     const std::string field_name = new_field_name ? "rules" : "Rule";
@@ -253,6 +347,7 @@ std::string rulesetToClashStr(YAML::Node &base_rule, std::vector<RulesetContent>
             total_rules++;
         }
     }
+    recordMetric("rules_processed", total_rules);
     return output_content;
 }
 

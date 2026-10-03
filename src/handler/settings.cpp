@@ -1,16 +1,52 @@
 #include <string>
 #include <mutex>
+#include <atomic>
 #include <toml.hpp>
+#include "handler/diagnostics.h"
 
 #include "config/binding.h"
 #include "handler/webget.h"
 #include "script/cron.h"
 #include "server/webserver.h"
+#include "utils/defer.h"
 #include "utils/logger.h"
 #include "utils/network.h"
 #include "interfaces.h"
 #include "multithread.h"
 #include "settings.h"
+
+static std::shared_ptr<const DownloadSettings> active_download_settings = std::make_shared<DownloadSettings>();
+std::shared_ptr<const DownloadSettings> downloadSettings() { return std::atomic_load(&active_download_settings); }
+
+static std::shared_ptr<const DownloadSettings> buildDownloadSettings(Settings &global)
+{
+    global.downloadTimeout = std::clamp(global.downloadTimeout, 1, 300);
+    global.connectTimeout = std::clamp(global.connectTimeout, 1, global.downloadTimeout);
+    global.maxParallelDownloads = std::clamp(global.maxParallelDownloads, 1, 32);
+    auto settings = std::make_shared<DownloadSettings>();
+    settings->downloadTimeout = global.downloadTimeout;
+    settings->connectTimeout = global.connectTimeout;
+    settings->maxParallelDownloads = global.maxParallelDownloads;
+    try
+    {
+        const auto headers = nlohmann::json::parse(global.subscriptionHeadersConfig);
+        if(!headers.is_object()) throw std::invalid_argument("headers must be an object");
+        for(auto it = headers.begin(); it != headers.end(); ++it)
+        {
+            auto origin = sourceOrigin(it.key());
+            if(origin.empty() || !it.value().is_object()) throw std::invalid_argument("invalid origin or headers");
+            for(auto header = it.value().begin(); header != it.value().end(); ++header)
+            {
+                const auto value = header.value().get<std::string>();
+                if(header.key().find_first_of("\r\n:") != std::string::npos || value.find_first_of("\r\n") != std::string::npos)
+                    throw std::invalid_argument("invalid header");
+                settings->subscriptionHeaders[origin][header.key()] = value;
+            }
+        }
+    }
+    catch(const std::exception &) { writeLog(0, "Invalid subscription_source_headers: expected an origin-to-headers JSON object", LOG_LEVEL_ERROR); return {}; }
+    return settings;
+}
 
 //multi-thread lock
 std::mutex gMutexConfigure;
@@ -22,7 +58,7 @@ extern WebServer webServer;
 const std::map<std::string, ruleset_type> RulesetTypes = {{"clash-domain:", RULESET_CLASH_DOMAIN}, {"clash-ipcidr:", RULESET_CLASH_IPCIDR}, {"clash-classic:", RULESET_CLASH_CLASSICAL}, \
             {"quanx:", RULESET_QUANX}, {"surge:", RULESET_SURGE}};
 
-int importItems(string_array &target, bool scope_limit)
+int importItems(string_array &target, bool scope_limit, const Settings &settings)
 {
     string_array result;
     std::stringstream ss;
@@ -38,12 +74,12 @@ int importItems(string_array &target, bool scope_limit)
         path = x.substr(x.find(":") + 1);
         writeLog(0, "Trying to import items from " + path);
 
-        std::string proxy = parseProxy(global.proxyConfig);
+        std::string proxy = parseProxy(settings.proxyConfig);
 
         if(fileExist(path))
             content = fileGet(path, scope_limit);
         else if(isLink(path))
-            content = webGet(path, proxy, global.cacheConfig);
+            content = webGet(path, proxy, settings.cacheConfig);
         else
             writeLog(0, "File not found or not a valid URL: " + path, LOG_LEVEL_ERROR);
         if(content.empty())
@@ -75,14 +111,14 @@ toml::value parseToml(const std::string &content, const std::string &fname)
     return toml::parse(is, fname);
 }
 
-void importItems(std::vector<toml::value> &root, const std::string &import_key, bool scope_limit = true)
+void importItems(std::vector<toml::value> &root, const std::string &import_key, bool scope_limit = true, const Settings &settings = global)
 {
     std::string content;
     std::vector<toml::value> newRoot;
     auto iter = root.begin();
     size_t count = 0;
 
-    std::string proxy = parseProxy(global.proxyConfig);
+    std::string proxy = parseProxy(settings.proxyConfig);
     while(iter != root.end())
     {
         auto& table = iter->as_table();
@@ -95,7 +131,7 @@ void importItems(std::vector<toml::value> &root, const std::string &import_key, 
             if(fileExist(path))
                 content = fileGet(path, scope_limit);
             else if(isLink(path))
-                content = webGet(path, proxy, global.cacheConfig);
+                content = webGet(path, proxy, settings.cacheConfig);
             else
                 writeLog(0, "File not found or not a valid URL: " + path, LOG_LEVEL_ERROR);
             if(!content.empty())
@@ -112,7 +148,7 @@ void importItems(std::vector<toml::value> &root, const std::string &import_key, 
     writeLog(0, "Imported " + std::to_string(count) + " item(s).");
 }
 
-void readRegexMatch(YAML::Node node, const std::string &delimiter, string_array &dest, bool scope_limit = true)
+void readRegexMatch(YAML::Node node, const std::string &delimiter, string_array &dest, bool scope_limit = true, const Settings &settings = global)
 {
     for(auto && object : node)
     {
@@ -137,10 +173,10 @@ void readRegexMatch(YAML::Node node, const std::string &delimiter, string_array 
             continue;
         dest.emplace_back(std::move(strLine));
     }
-    importItems(dest, scope_limit);
+    importItems(dest, scope_limit, settings);
 }
 
-void readEmoji(YAML::Node node, string_array &dest, bool scope_limit = true)
+void readEmoji(YAML::Node node, string_array &dest, bool scope_limit = true, const Settings &settings = global)
 {
     for(auto && object : node)
     {
@@ -166,10 +202,10 @@ void readEmoji(YAML::Node node, string_array &dest, bool scope_limit = true)
             continue;
         dest.emplace_back(std::move(strLine));
     }
-    importItems(dest, scope_limit);
+    importItems(dest, scope_limit, settings);
 }
 
-void readGroup(YAML::Node node, string_array &dest, bool scope_limit = true)
+void readGroup(YAML::Node node, string_array &dest, bool scope_limit = true, const Settings &settings = global)
 {
     for(YAML::Node && object : node)
     {
@@ -212,10 +248,10 @@ void readGroup(YAML::Node node, string_array &dest, bool scope_limit = true)
         std::string strLine = join(tempArray, "`");
         dest.emplace_back(std::move(strLine));
     }
-    importItems(dest, scope_limit);
+    importItems(dest, scope_limit, settings);
 }
 
-void readRuleset(YAML::Node node, string_array &dest, bool scope_limit = true)
+void readRuleset(YAML::Node node, string_array &dest, bool scope_limit = true, const Settings &settings = global)
 {
     for(auto && object : node)
     {
@@ -242,7 +278,7 @@ void readRuleset(YAML::Node node, string_array &dest, bool scope_limit = true)
             continue;
         dest.emplace_back(std::move(strLine));
     }
-    importItems(dest, scope_limit);
+    importItems(dest, scope_limit, settings);
 }
 
 void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &ruleset_content_array)
@@ -261,7 +297,7 @@ void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &
         if(pos != std::string::npos)
         {
             writeLog(0, "Adding rule '" + rule_url.substr(pos + 2) + "," + rule_group + "'.", LOG_LEVEL_INFO);
-            rc = {rule_group, "", "", RULESET_SURGE, std::async(std::launch::async, [=](){return rule_url.substr(pos);}), 0};
+            rc = {rule_group, "", "", RULESET_SURGE, std::async(std::launch::deferred, [=](){return rule_url.substr(pos);}), 0};
         }
         else
         {
@@ -274,14 +310,15 @@ void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &
                 type = iter->second;
             }
             writeLog(0, "Updating ruleset url '" + rule_url + "' with group '" + rule_group + "'.", LOG_LEVEL_INFO);
-            rc = {rule_group, rule_url, rule_url_typed, type, fetchFileAsync(rule_url, proxy, global.cacheRuleset, true, global.asyncFetchRuleset), x.Interval};
+            rc = {rule_group, rule_url, rule_url_typed, type, fetchFileAsync(rule_url, proxy, global.cacheRuleset, true, global.asyncFetchRuleset,
+                [type](const std::string &content) { return validRuleset(content, type); }), x.Interval};
         }
         ruleset_content_array.emplace_back(std::move(rc));
     }
     ruleset_content_array.shrink_to_fit();
 }
 
-void readYAMLConf(YAML::Node &node)
+void readYAMLConf(YAML::Node &node, Settings &global, WebServer &webServer, bool &refresh_tasks)
 {
     YAML::Node section = node["common"];
     std::string strLine;
@@ -345,16 +382,16 @@ void readYAMLConf(YAML::Node &node)
         section = node["userinfo"];
         if(section["stream_rule"].IsSequence())
         {
-            readRegexMatch(section["stream_rule"], "|", tempArray, false);
+            readRegexMatch(section["stream_rule"], "|", tempArray, false, global);
             auto configs = INIBinding::from<RegexMatchConfig>::from_ini(tempArray, "|");
-            safe_set_streams(configs);
+            global.streamNodeRules = configs;
             eraseElements(tempArray);
         }
         if(section["time_rule"].IsSequence())
         {
-            readRegexMatch(section["time_rule"], "|", tempArray, false);
+            readRegexMatch(section["time_rule"], "|", tempArray, false, global);
             auto configs = INIBinding::from<RegexMatchConfig>::from_ini(tempArray, "|");
-            safe_set_times(configs);
+            global.timeNodeRules = configs;
             eraseElements(tempArray);
         }
     }
@@ -383,9 +420,9 @@ void readYAMLConf(YAML::Node &node)
 
     if(section["rename_node"].IsSequence())
     {
-        readRegexMatch(section["rename_node"], "@", tempArray, false);
+        readRegexMatch(section["rename_node"], "@", tempArray, false, global);
         auto configs = INIBinding::from<RegexMatchConfig>::from_ini(tempArray, "@");
-        safe_set_renames(configs);
+        global.renames = configs;
         eraseElements(tempArray);
     }
 
@@ -412,9 +449,9 @@ void readYAMLConf(YAML::Node &node)
         section["remove_old_emoji"] >> global.removeEmoji;
         if(section["rules"].IsSequence())
         {
-            readEmoji(section["rules"], tempArray, false);
+            readEmoji(section["rules"], tempArray, false, global);
             auto configs = INIBinding::from<RegexMatchConfig>::from_ini(tempArray, ",");
-            safe_set_emojis(configs);
+            global.emojis = configs;
             eraseElements(tempArray);
         }
     }
@@ -438,7 +475,7 @@ void readYAMLConf(YAML::Node &node)
         if(section[ruleset_title].IsSequence())
         {
             string_array vArray;
-            readRuleset(section[ruleset_title], vArray, false);
+            readRuleset(section[ruleset_title], vArray, false, global);
             global.customRulesets = INIBinding::from<RulesetConfig>::from_ini(vArray);
         }
     }
@@ -447,7 +484,7 @@ void readYAMLConf(YAML::Node &node)
     if(node[groups_title].IsDefined() && node[groups_title]["custom_proxy_group"].IsDefined())
     {
         string_array vArray;
-        readGroup(node[groups_title]["custom_proxy_group"], vArray, false);
+        readGroup(node[groups_title]["custom_proxy_group"], vArray, false, global);
         global.customProxyGroups = INIBinding::from<ProxyGroupConfig>::from_ini(vArray);
     }
 
@@ -498,10 +535,10 @@ void readYAMLConf(YAML::Node &node)
             strLine = name + "`" + exp + "`" + path + "`" + timeout;
             vArray.emplace_back(std::move(strLine));
         }
-        importItems(vArray, false);
+        importItems(vArray, false, global);
         global.enableCron = !vArray.empty();
         global.cronTasks = INIBinding::from<CronTaskConfig>::from_ini(vArray);
-        refresh_schedule();
+        refresh_tasks = true;
     }
 
     if(node["server"].IsDefined())
@@ -561,8 +598,13 @@ void readYAMLConf(YAML::Node &node)
         }
         node["advanced"]["script_clean_context"] >> global.scriptCleanContext;
         node["advanced"]["async_fetch_ruleset"] >> global.asyncFetchRuleset;
+        node["advanced"]["download_timeout"] >> global.downloadTimeout;
+        node["advanced"]["connect_timeout"] >> global.connectTimeout;
+        node["advanced"]["max_parallel_downloads"] >> global.maxParallelDownloads;
+        node["advanced"]["subscription_source_headers"] >> global.subscriptionHeadersConfig;
         node["advanced"]["skip_failed_links"] >> global.skipFailedLinks;
     }
+    global.configurationLoaded = true;
     writeLog(0, "Load preference settings in YAML format completed.", LOG_LEVEL_INFO);
 }
 
@@ -582,7 +624,7 @@ void operate_toml_kv_table(const std::vector<toml::table> &arr, const toml::valu
     }
 }
 
-void readTOMLConf(toml::value &root)
+void readTOMLConf(toml::value &root, Settings &global, WebServer &webServer, bool &refresh_tasks)
 {
     auto section_common = toml::find(root, "common");
     string_array default_url, insert_url;
@@ -623,10 +665,10 @@ void readTOMLConf(toml::value &root)
     else
         global.filterScript.clear();
 
-    safe_set_streams(toml::find_or<RegexMatchConfigs>(root, "userinfo", "stream_rule", RegexMatchConfigs{}));
-    safe_set_times(toml::find_or<RegexMatchConfigs>(root, "userinfo", "time_rule", RegexMatchConfigs{}));
+    global.streamNodeRules = toml::find_or<RegexMatchConfigs>(root, "userinfo", "stream_rule", RegexMatchConfigs{});
+    global.timeNodeRules = toml::find_or<RegexMatchConfigs>(root, "userinfo", "time_rule", RegexMatchConfigs{});
 
-    auto section_node_pref = toml::find(root, "node_pref");
+    auto section_node_pref = toml::find_or(root, "node_pref", toml::value(toml::table{}));
 
     find_if_exist(section_node_pref,
                   "udp_flag", global.UDPFlag,
@@ -644,10 +686,10 @@ void readTOMLConf(toml::value &root)
     );
 
     auto renameconfs = toml::find_or<std::vector<toml::value>>(section_node_pref, "rename_node", {});
-    importItems(renameconfs, "rename_node", false);
-    safe_set_renames(toml::get<RegexMatchConfigs>(toml::value(renameconfs)));
+    importItems(renameconfs, "rename_node", false, global);
+    global.renames = toml::get<RegexMatchConfigs>(toml::value(renameconfs));
 
-    auto section_managed = toml::find(root, "managed_config");
+    auto section_managed = toml::find_or(root, "managed_config", toml::value(toml::table{}));
 
     find_if_exist(section_managed,
                   "write_managed_config", global.writeManagedConfig,
@@ -657,13 +699,13 @@ void readTOMLConf(toml::value &root)
                   "quanx_device_id", global.quanXDevID
     );
 
-    auto section_surge_external = toml::find(root, "surge_external_proxy");
+    auto section_surge_external = toml::find_or(root, "surge_external_proxy", toml::value(toml::table{}));
     find_if_exist(section_surge_external,
                   "surge_ssr_path", global.surgeSSRPath,
                   "resolve_hostname", global.surgeResolveHostname
     );
 
-    auto section_emojis = toml::find(root, "emojis");
+    auto section_emojis = toml::find_or(root, "emojis", toml::value(toml::table{}));
 
     find_if_exist(section_emojis,
                   "add_emoji", global.addEmoji,
@@ -671,14 +713,14 @@ void readTOMLConf(toml::value &root)
     );
 
     auto emojiconfs = toml::find_or<std::vector<toml::value>>(section_emojis, "emoji", {});
-    importItems(emojiconfs, "emoji", false);
-    safe_set_emojis(toml::get<RegexMatchConfigs>(toml::value(emojiconfs)));
+    importItems(emojiconfs, "emoji", false, global);
+    global.emojis = toml::get<RegexMatchConfigs>(toml::value(emojiconfs));
 
     auto groups = toml::find_or<std::vector<toml::value>>(root, "custom_groups", {});
-    importItems(groups, "custom_groups", false);
+    importItems(groups, "custom_groups", false, global);
     global.customProxyGroups = toml::get<ProxyGroupConfigs>(toml::value(groups));
 
-    auto section_ruleset = toml::find(root, "ruleset");
+    auto section_ruleset = toml::find_or(root, "ruleset", toml::value(toml::table{}));
 
     find_if_exist(section_ruleset,
                   "enabled", global.enableRuleGen,
@@ -687,10 +729,10 @@ void readTOMLConf(toml::value &root)
     );
 
     auto rulesets = toml::find_or<std::vector<toml::value>>(root, "rulesets", {});
-    importItems(rulesets, "rulesets", false);
+    importItems(rulesets, "rulesets", false, global);
     global.customRulesets = toml::get<RulesetConfigs>(toml::value(rulesets));
 
-    auto section_template = toml::find(root, "template");
+    auto section_template = toml::find_or(root, "template", toml::value(toml::table{}));
 
     global.templatePath = toml::find_or(section_template, "template_path", "template");
 
@@ -707,11 +749,11 @@ void readTOMLConf(toml::value &root)
     });
 
     auto tasks = toml::find_or<std::vector<toml::value>>(root, "tasks", {});
-    importItems(tasks, "tasks", false);
+    importItems(tasks, "tasks", false, global);
     global.cronTasks = toml::get<CronTaskConfigs>(toml::value(tasks));
-    refresh_schedule();
+    refresh_tasks = true;
 
-    auto section_server = toml::find(root, "server");
+    auto section_server = toml::find_or(root, "server", toml::value(toml::table{}));
 
     find_if_exist(section_server,
                   "listen", global.listenAddress,
@@ -720,7 +762,7 @@ void readTOMLConf(toml::value &root)
     );
     webServer.serve_file = !webServer.serve_file_root.empty();
 
-    auto section_advanced = toml::find(root, "advanced");
+    auto section_advanced = toml::find_or(root, "advanced", toml::value(toml::table{}));
 
     std::string log_level;
     bool enable_cache = true;
@@ -740,6 +782,11 @@ void readTOMLConf(toml::value &root)
                   "cache_ruleset", cache_ruleset,
                   "script_clean_context", global.scriptCleanContext,
                   "async_fetch_ruleset", global.asyncFetchRuleset,
+                  "serve_cache_on_fetch_fail", global.serveCacheOnFetchFail,
+                  "download_timeout", global.downloadTimeout,
+                  "connect_timeout", global.connectTimeout,
+                  "max_parallel_downloads", global.maxParallelDownloads,
+                  "subscription_source_headers", global.subscriptionHeadersConfig,
                   "skip_failed_links", global.skipFailedLinks
     );
 
@@ -780,12 +827,14 @@ void readTOMLConf(toml::value &root)
         global.cacheSubscription = global.cacheConfig = global.cacheRuleset = 0;
     }
 
+    global.configurationLoaded = true;
     writeLog(0, "Load preference settings in TOML format completed.", LOG_LEVEL_INFO);
 }
 
-void readConf()
+// Populate candidate objects; active globals remain unchanged during parsing and validation.
+static void loadConf(const std::string &prefdata, Settings &global, WebServer &webServer, bool &refresh_tasks)
 {
-    guarded_mutex guard(gMutexConfigure);
+    global.configurationLoaded = false;
     writeLog(0, "Loading preference settings...", LOG_LEVEL_INFO);
 
     eraseElements(global.excludeRemarks);
@@ -793,36 +842,54 @@ void readConf()
     eraseElements(global.customProxyGroups);
     eraseElements(global.customRulesets);
 
+    bool structured_format = false;
     try
     {
-        std::string prefdata = fileGet(global.prefPath, false);
+        if(prefdata.empty()) { writeLog(0, "Preference file is missing or empty", LOG_LEVEL_FATAL); return; }
         if(prefdata.find("common:") != std::string::npos)
         {
             YAML::Node yaml = YAML::Load(prefdata);
             if(yaml.size() && yaml["common"])
-                return readYAMLConf(yaml);
+            {
+                structured_format = true;
+                return readYAMLConf(yaml, global, webServer, refresh_tasks);
+            }
         }
         toml::value conf = parseToml(prefdata, global.prefPath);
         if(!conf.is_empty() && toml::find_or<int>(conf, "version", 0))
-            return readTOMLConf(conf);
+        {
+            structured_format = true;
+            return readTOMLConf(conf, global, webServer, refresh_tasks);
+        }
     }
     catch (YAML::Exception &e)
     {
-        //ignore yaml parse error
-        writeLog(0, e.what(), LOG_LEVEL_DEBUG);
+        writeLog(0, "Invalid preference syntax (details omitted to protect credentials)", LOG_LEVEL_DEBUG);
         writeLog(0, "Unable to load preference settings as YAML.", LOG_LEVEL_DEBUG);
+        if(structured_format) return;
     }
     catch (toml::exception &e)
     {
-        //ignore toml parse error
-        writeLog(0, e.what(), LOG_LEVEL_DEBUG);
+        writeLog(0, "Invalid preference syntax (details omitted to protect credentials)", LOG_LEVEL_DEBUG);
         writeLog(0, "Unable to load preference settings as TOML.", LOG_LEVEL_DEBUG);
+        if(structured_format) return;
     }
 
+    catch (const std::exception &)
+    {
+        writeLog(0, "Invalid preference value or missing required section", LOG_LEVEL_FATAL);
+        return;
+    }
+
+    if(endsWith(global.prefPath, ".toml") || endsWith(global.prefPath, ".yml") || endsWith(global.prefPath, ".yaml"))
+    {
+        writeLog(0, "Invalid preference syntax or missing common section", LOG_LEVEL_FATAL);
+        return;
+    }
     INIReader ini;
     ini.allow_dup_section_titles = true;
     //ini.do_utf8_to_gbk = true;
-    int retVal = ini.parse_file(global.prefPath);
+    int retVal = ini.parse(prefdata);
     if(retVal != INIREADER_EXCEPTION_NONE)
     {
         writeLog(0, "Unable to load preference settings as INI. Reason: " + ini.get_last_error(), LOG_LEVEL_FATAL);
@@ -890,9 +957,9 @@ void readConf()
         if(ini.item_prefix_exist("rename_node"))
         {
             ini.get_all("rename_node", tempArray);
-            importItems(tempArray, false);
+            importItems(tempArray, false, global);
             auto configs = INIBinding::from<RegexMatchConfig>::from_ini(tempArray, "@");
-            safe_set_renames(configs);
+            global.renames = configs;
             eraseElements(tempArray);
         }
     }
@@ -903,17 +970,17 @@ void readConf()
         if(ini.item_prefix_exist("stream_rule"))
         {
             ini.get_all("stream_rule", tempArray);
-            importItems(tempArray, false);
+            importItems(tempArray, false, global);
             auto configs = INIBinding::from<RegexMatchConfig>::from_ini(tempArray, "|");
-            safe_set_streams(configs);
+            global.streamNodeRules = configs;
             eraseElements(tempArray);
         }
         if(ini.item_prefix_exist("time_rule"))
         {
             ini.get_all("time_rule", tempArray);
-            importItems(tempArray, false);
+            importItems(tempArray, false, global);
             auto configs = INIBinding::from<RegexMatchConfig>::from_ini(tempArray, "|");
-            safe_set_times(configs);
+            global.timeNodeRules = configs;
             eraseElements(tempArray);
         }
     }
@@ -931,9 +998,9 @@ void readConf()
     if(ini.item_prefix_exist("rule"))
     {
         ini.get_all("rule", tempArray);
-        importItems(tempArray, false);
+        importItems(tempArray, false, global);
         auto configs = INIBinding::from<RegexMatchConfig>::from_ini(tempArray, ",");
-        safe_set_emojis(configs);
+        global.emojis = configs;
         eraseElements(tempArray);
     }
 
@@ -950,14 +1017,14 @@ void readConf()
         {
             string_array vArray;
             ini.get_all("ruleset", vArray);
-            importItems(vArray, false);
+            importItems(vArray, false, global);
             global.customRulesets = INIBinding::from<RulesetConfig>::from_ini(vArray);
         }
         else if(ini.item_prefix_exist("surge_ruleset"))
         {
             string_array vArray;
             ini.get_all("surge_ruleset", vArray);
-            importItems(vArray, false);
+            importItems(vArray, false, global);
             global.customRulesets = INIBinding::from<RulesetConfig>::from_ini(vArray);
         }
     }
@@ -975,7 +1042,7 @@ void readConf()
     {
         string_array vArray;
         ini.get_all("custom_proxy_group", vArray);
-        importItems(vArray, false);
+        importItems(vArray, false, global);
         global.customProxyGroups = INIBinding::from<ProxyGroupConfig>::from_ini(vArray);
     }
 
@@ -1006,10 +1073,10 @@ void readConf()
         string_array vArray;
         ini.enter_section("tasks");
         ini.get_all("task", vArray);
-        importItems(vArray, false);
+        importItems(vArray, false, global);
         global.enableCron = !vArray.empty();
         global.cronTasks = INIBinding::from<CronTaskConfig>::from_ini(vArray);
-        refresh_schedule();
+        refresh_tasks = true;
     }
 
     ini.enter_section("server");
@@ -1069,9 +1136,70 @@ void readConf()
     }
     ini.get_bool_if_exist("script_clean_context", global.scriptCleanContext);
     ini.get_bool_if_exist("async_fetch_ruleset", global.asyncFetchRuleset);
+    ini.get_int_if_exist("download_timeout", global.downloadTimeout);
+    ini.get_int_if_exist("connect_timeout", global.connectTimeout);
+    ini.get_int_if_exist("max_parallel_downloads", global.maxParallelDownloads);
+    ini.get_if_exist("subscription_source_headers", global.subscriptionHeadersConfig);
     ini.get_bool_if_exist("skip_failed_links", global.skipFailedLinks);
 
+    global.configurationLoaded = true;
     writeLog(0, "Load preference settings in INI format completed.", LOG_LEVEL_INFO);
+}
+
+bool readConf(const std::string *new_config)
+{
+    guarded_mutex guard(gMutexConfigure);
+    Settings previous = global;
+    auto previous_redirects = webServer.redirect_map;
+    const auto previous_root = webServer.serve_file_root;
+    const bool previous_serve_file = webServer.serve_file;
+    bool committed = false, applied = false, schedules_changed = false;
+    defer(
+        if(applied && !committed)
+        {
+            safe_set_settings(std::move(previous));
+            webServer.redirect_map = std::move(previous_redirects);
+            webServer.serve_file_root = previous_root;
+            webServer.serve_file = previous_serve_file;
+            if(schedules_changed) refresh_schedule();
+        }
+    )
+    try
+    {
+        bool refresh_tasks = false;
+        Settings candidate = global;
+        WebServer candidate_server;
+        candidate_server.redirect_map = webServer.redirect_map;
+        candidate_server.serve_file_root = webServer.serve_file_root;
+        candidate_server.serve_file = webServer.serve_file;
+        loadConf(new_config ? *new_config : fileGet(global.prefPath, false), candidate, candidate_server, refresh_tasks);
+        if(!candidate.configurationLoaded) return false;
+        const auto settings = buildDownloadSettings(candidate);
+        if(!settings) return false;
+        safe_set_settings(std::move(candidate));
+        applied = true;
+        webServer.redirect_map = std::move(candidate_server.redirect_map);
+        webServer.serve_file_root = std::move(candidate_server.serve_file_root);
+        webServer.serve_file = candidate_server.serve_file;
+        if(refresh_tasks)
+        {
+            schedules_changed = true;
+            refresh_schedule();
+        }
+        if(new_config && fileWriteAtomic(global.prefPath, *new_config) != 0)
+        {
+            writeLog(0, "Cannot write updated preference file", LOG_LEVEL_ERROR);
+            return false;
+        }
+        std::atomic_store(&active_download_settings, settings);
+        committed = true;
+        return true;
+    }
+    catch(const std::exception &)
+    {
+        writeLog(0, "Invalid preference value or missing required section", LOG_LEVEL_ERROR);
+        return false;
+    }
 }
 
 int loadExternalYAML(YAML::Node &node, ExternalConfig &ext)
@@ -1204,6 +1332,7 @@ int loadExternalTOML(toml::value &root, ExternalConfig &ext)
 int loadExternalConfig(std::string &path, ExternalConfig &ext)
 {
     std::string base_content, proxy = parseProxy(global.proxyConfig), config = fetchFile(path, proxy, global.cacheConfig);
+    if(config.empty()) return -1;
     if(render_template(config, *ext.tpl_args, base_content, global.templatePath) != 0)
         base_content = config;
 
@@ -1235,6 +1364,7 @@ int loadExternalConfig(std::string &path, ExternalConfig &ext)
         return -1;
     }
 
+    if(!ini.section_exist("custom")) return -1;
     ini.enter_section("custom");
     if(ini.item_prefix_exist("custom_proxy_group"))
     {

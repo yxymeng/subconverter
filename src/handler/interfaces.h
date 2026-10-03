@@ -12,7 +12,7 @@
 std::string parseProxy(const std::string &source);
 
 void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &rca);
-void readConf();
+bool readConf(const std::string *new_config = nullptr);
 int simpleGenerator();
 std::string convertRuleset(const std::string &content, int type);
 

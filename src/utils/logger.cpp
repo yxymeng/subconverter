@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "handler/settings.h"
+#include "handler/diagnostics.h"
 #include "defer.h"
 #include "lock.h"
 #include "logger.h"
@@ -67,7 +68,8 @@ void writeLog(int type, const std::string &content, int level)
     std::lock_guard<std::mutex> lock(log_mutex);
     const char *levels[] = {"[FATL]", "[ERRO]", "[WARN]", "[INFO]", "[DEBG]", "[VERB]"};
     std::cerr<<getTime(2)<<" ["<<getpid()<<" "<<get_thread_name()<<"]"<<levels[level % 6];
-    std::cerr<<" "<<content<<"\n";
+    if(auto context = currentDiagnostics()) std::cerr<<" ["<<context->id<<"]";
+    std::cerr<<" "<<redactForLog(content)<<"\n";
 }
 
 
