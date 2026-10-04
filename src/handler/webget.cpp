@@ -269,10 +269,7 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
             headers = curl_slist_append(headers, (key + ": " + value).c_str());
     curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
     std::string body, response_headers;
-    const auto settings = downloadSettings();
-    const auto source_headers = settings->subscriptionHeaders.find(sourceOrigin(argument.url));
-    ResponseHeaders response {handle, &response_headers, argument.request_headers &&
-        source_headers != settings->subscriptionHeaders.end() && !source_headers->second.empty()};
+    ResponseHeaders response {handle, &response_headers, argument.restrict_origin};
     curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, writer);
     curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, headerWriter);
@@ -291,22 +288,25 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     long code = 0;
     CURLcode transfer = CURLE_OK;
     const bool self = selfRequest(url);
+    const bool blocked_cors = startsWith(argument.proxy, "cors:") && response.restrict_origin &&
+        sourceOrigin(url) != sourceOrigin(argument.url);
     const unsigned int attempts = (argument.method == HTTP_GET || argument.method == HTTP_HEAD) ? 2 : 1;
     unsigned int tried = 0;
     for(; tried < attempts;)
     {
         ++tried;
         body.clear(); response_headers.clear();
-        transfer = self ? CURLE_TOO_MANY_REDIRECTS : curl_easy_perform(handle);
+        transfer = self || blocked_cors ? CURLE_TOO_MANY_REDIRECTS : curl_easy_perform(handle);
         curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &code);
         if(transfer == CURLE_OK || transfer == CURLE_FILESIZE_EXCEEDED ||
-           transfer == CURLE_ABORTED_BY_CALLBACK || self || response.blocked) break;
+           transfer == CURLE_ABORTED_BY_CALLBACK || self || blocked_cors || response.blocked) break;
     }
     result.transport_code = transfer;
     result.success = transfer == CURLE_OK && code >= 200 && code < 300;
     if(transfer != CURLE_OK) result.error = self || response.self_reference ? "Self-referencing conversion request rejected" : curl_easy_strerror(transfer);
     else if(!result.success) result.error = "HTTP " + std::to_string(code);
     if(response.blocked && !response.self_reference) result.error = "Cross-origin redirect with source-specific headers rejected";
+    if(blocked_cors) result.error = "CORS relay with source-specific headers rejected";
     if(result.success && argument.validate_content && !argument.validate_content(body))
     {
         result.success = false;
@@ -384,7 +384,7 @@ static void writeCache(const std::string &path, const std::string &body, const s
         writeLog(0, "Cannot write download cache", LOG_LEVEL_WARNING);
 }
 
-std::string webGet(const std::string &url, const std::string &proxy, unsigned int cache_ttl, std::string *response_headers, string_icase_map *request_headers, const std::function<bool(const std::string &)> &validate_content)
+std::string webGet(const std::string &url, const std::string &proxy, unsigned int cache_ttl, std::string *response_headers, string_icase_map *request_headers, const std::function<bool(const std::string &)> &validate_content, bool restrict_origin)
 {
     latest_fetch_error.clear();
     const auto valid = [&](const std::string &body) { return !validate_content || validate_content(body); };
@@ -400,7 +400,7 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
     const bool fallback = stale || (!rules && global.serveCacheOnFetchFail);
     int code = 0;
     std::string content, headers;
-    FetchArgument argument {HTTP_GET, url, proxy, nullptr, request_headers, nullptr, cache_ttl, false, validate_content};
+    FetchArgument argument {HTTP_GET, url, proxy, nullptr, request_headers, nullptr, cache_ttl, false, validate_content, restrict_origin};
     FetchResult result {&code, &content, &headers};
     if(cache_ttl == 0)
     {

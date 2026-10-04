@@ -195,6 +195,58 @@ class Integration(unittest.TestCase):
         self.assertNotIn('Cookie',self.source.headers['/again'])
         self.assertNotIn('fixture-cookie',(app.root/'stderr.log').read_text())
 
+    def test_cors_relay_rejects_origin_scoped_headers(self):
+        relay=Source()
+        try:
+            proxy='cors:'+relay.origin+'/relay/'
+            app=self.app(proxy=proxy,parallel=1,fallback=False,extra='subscription_source_headers='+
+                json.dumps({self.source.origin:{'Authorization':'Bearer source-secret','X-Source-Key':'source-secret'}}))
+            status,report,_=app.request(self.source.origin+'/sub?token=source-token')
+            self.assertGreaterEqual(status,400,report)
+            self.assertIn('CORS relay',str(report))
+            self.assertEqual(sum(relay.counts.values()),0)
+            self.assertEqual(sum(self.source.counts.values()),0)
+            self.assertEqual([d['attempts'] for d in report['downloads']],[1])
+            for secret in ('source-secret','source-token'):
+                self.assertNotIn(secret,json.dumps(report))
+                self.assertNotIn(secret,(app.root/'stderr.log').read_text())
+            plain=self.app(proxy=proxy,fallback=False)
+            status,report,_=plain.request(self.source.origin+'/sub',headers={'User-Agent':'fixture-UA'})
+            self.assertEqual(status,200,report)
+            self.assertEqual(sum(relay.counts.values()),1)
+            sent=next(iter(relay.headers.values()))
+            self.assertEqual(sent['User-Agent'],'fixture-UA')
+            self.assertNotIn('Authorization',sent);self.assertNotIn('X-Source-Key',sent)
+            # Reload while source credentials already copied into a request wait for a permit.
+            entered=threading.Event();released=threading.Event()
+            def blocker(number,headers):
+                entered.set();released.wait(3)
+                return (200,SUB,0)
+            relay.routes['/relay/'+relay.origin+'/blocker']=blocker
+            before=(app.root/'stderr.log').read_text().count('Downloading subscription data...')
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first=pool.submit(app.request,relay.origin+'/blocker')
+                try:
+                    self.assertTrue(entered.wait(1),'Blocker did not acquire download permit')
+                    pending=pool.submit(app.request,self.source.origin+'/pending',refresh='true')
+                    for _ in range(100):
+                        if (app.root/'stderr.log').read_text().count('Downloading subscription data...')>=before+2: break
+                        time.sleep(.005)
+                    else: self.fail('Credential request did not enter download phase')
+                    time.sleep(.1)
+                    previous=app.pref.read_text()
+                    app.pref.write_text(previous.replace('subscription_source_headers='+
+                        json.dumps({self.source.origin:{'Authorization':'Bearer source-secret','X-Source-Key':'source-secret'}}),
+                        'subscription_source_headers={}'))
+                    self.assertEqual(get(app.origin+'/readconf')[0],200)
+                finally: released.set()
+                self.assertEqual(first.result()[0],200)
+                status,report,_=pending.result()
+            self.assertGreaterEqual(status,400,report)
+            self.assertIn('CORS relay',str(report))
+            self.assertEqual(relay.counts['/relay/'+self.source.origin+'/pending'],0)
+        finally: relay.close()
+
     def test_distinct_errors_and_retry_buffer(self):
         app=self.app()
         for path, route, expected in [('/forbidden',(403,b'denied',0),'HTTP 403'),('/invalid',(200,b'not a subscription',0),'cannot be parsed'),('/timeout',(200,SUB,1.2),'Timeout')]:
@@ -216,6 +268,7 @@ class Integration(unittest.TestCase):
                'quan':'quan.conf','quanx':'quanx.conf','loon':'loon.conf',
                'sssub':'shadowsocks_base.json','singbox':'singbox.json'}
         app=self.app(extra='[common]\n'+''.join(target+'_rule_base=base/'+path+'\n' for target,path in bases.items()))
+        (app.root/'gistconf.ini').unlink(missing_ok=True)
         ss=b'ss://'+base64.urlsafe_b64encode(b'aes-128-cfb:fixture-password')+b'@127.0.0.2:443#ss-fixture'
         vmess=b'vmess://'+base64.b64encode(json.dumps({'v':'2','ps':'vmess-fixture',
             'add':'127.0.0.2','port':'443','id':'00000000-0000-0000-0000-000000000001',
@@ -238,6 +291,7 @@ class Integration(unittest.TestCase):
                     self.assertEqual(report['metrics'].get('nodes_exported'),1,report)
                     self.assertTrue(report['output'])
                     if filtered is None: continue
+                    params['upload']='true'
                     status,report,_=app.request(self.source.origin+'/filtered',**params)
                     self.assertEqual(status,422,report)
                     self.assertEqual(report['metrics'].get('nodes_exported'),0,report)
@@ -245,6 +299,12 @@ class Integration(unittest.TestCase):
                     status,body,_=get(app.origin+'/sub?'+urlencode({'url':self.source.origin+'/filtered',**params}))
                     self.assertEqual(status,422,body)
                     self.assertIn(b'No nodes can be exported',body)
+        self.assertFalse('gistconf.ini' in (app.root/'stderr.log').read_text(),'Empty export entered Gist upload')
+        self.source.routes['/uploadable']=(200,ss,0)
+        status,report,_=app.request(self.source.origin+'/uploadable',target='sssub',upload='true')
+        self.assertEqual(status,200,report)
+        self.assertEqual(report['metrics']['nodes_exported'],1,report)
+        self.assertTrue('gistconf.ini not found' in (app.root/'stderr.log').read_text(),'Valid export did not enter Gist upload')
 
     def test_single_export_skips_incompatible_nodes(self):
         app=self.app()

@@ -150,11 +150,13 @@ int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID, parse_
         auto origin = sourceOrigin(link);
         const auto settings = downloadSettings();
         // Origin includes the port; credentials are configured for exactly that source.
-        if(auto found = settings->subscriptionHeaders.find(origin); found != settings->subscriptionHeaders.end())
+        const auto found = settings->subscriptionHeaders.find(origin);
+        const bool restrict_origin = found != settings->subscriptionHeaders.end() && !found->second.empty();
+        if(restrict_origin)
             for(const auto &[key, value] : found->second) source_headers[key] = value;
         {
             PhaseTimer timer("subscription_download");
-            strSub = webGet(link, proxy, global.cacheSubscription, &extra_headers, &source_headers);
+            strSub = webGet(link, proxy, global.cacheSubscription, &extra_headers, &source_headers, {}, restrict_origin);
         }
         /*
         if(strSub.size() == 0)
