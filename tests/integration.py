@@ -60,16 +60,17 @@ class Source:
                     if callable(route): route = route(number, self.headers)
                     code, body, delay = route[:3]
                     time.sleep(delay)
-                    self.send_response(code)
-                    self.send_header('Content-Length', str(len(body) + (100 if len(route) > 3 and route[3] == 'truncate' else 0)))
-                    headers=route[3] if len(route)>3 and isinstance(route[3],dict) else owner.response_headers
-                    for key,value in headers.items(): self.send_header(key,value)
-                    self.end_headers()
-                    try: self.wfile.write(body)
-                    except (BrokenPipeError, ConnectionResetError): pass
-                    if len(route) > 3 and route[3] == 'truncate': self.close_connection = True
                 finally:
+                    # Finish simulated upstream work before the client can start its next request.
                     with owner.lock: owner.active -= 1
+                self.send_response(code)
+                self.send_header('Content-Length', str(len(body) + (100 if len(route) > 3 and route[3] == 'truncate' else 0)))
+                headers=route[3] if len(route)>3 and isinstance(route[3],dict) else owner.response_headers
+                for key,value in headers.items(): self.send_header(key,value)
+                self.end_headers()
+                try: self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError): pass
+                if len(route) > 3 and route[3] == 'truncate': self.close_connection = True
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.server.daemon_threads = True
         self.origin = 'http://127.0.0.1:' + str(self.server.server_port)
@@ -209,6 +210,57 @@ class Integration(unittest.TestCase):
         self.assertEqual(status,200,report)
         self.assertEqual(report['downloads'][0]['attempts'],2)
         self.assertEqual(self.source.counts['/retry'],2)
+
+    def test_exported_node_counts_and_empty_targets(self):
+        bases={'surge':'surge.conf','surfboard':'surfboard.conf','mellow':'mellow.conf',
+               'quan':'quan.conf','quanx':'quanx.conf','loon':'loon.conf',
+               'sssub':'shadowsocks_base.json','singbox':'singbox.json'}
+        app=self.app(extra='[common]\n'+''.join(target+'_rule_base=base/'+path+'\n' for target,path in bases.items()))
+        ss=b'ss://'+base64.urlsafe_b64encode(b'aes-128-cfb:fixture-password')+b'@127.0.0.2:443#ss-fixture'
+        vmess=b'vmess://'+base64.b64encode(json.dumps({'v':'2','ps':'vmess-fixture',
+            'add':'127.0.0.2','port':'443','id':'00000000-0000-0000-0000-000000000001',
+            'aid':'0','net':'tcp','type':'none','host':'','path':'','tls':''}).encode())
+        ss,vmess=base64.b64encode(ss),base64.b64encode(vmess)
+        hy2=base64.b64encode(b'hysteria2://fixture-password@127.0.0.2:443#filtered-fixture')
+        snell=b'proxies:\n  - {name: filtered-fixture, type: snell, server: 127.0.0.2, port: 443, psk: fixture-password}\n'
+        cases=[('clash',ss,None),('clashr',ss,None),('surge',ss,hy2),('surfboard',ss,hy2),
+               ('quan',ss,SUB),('quanx',ss,snell),('loon',ss,snell),('mellow',ss,SUB),
+               ('sssub',ss,SUB),('ssd',ss,SUB),('ss',ss,SUB),('ssr',ss,SUB),
+               ('v2ray',vmess,SUB),('trojan',SUB,ss),('mixed',ss,hy2),('singbox',ss,snell)]
+        for target,supported,filtered in cases:
+            self.source.routes['/supported']=(200,supported,0)
+            self.source.routes['/filtered']=(200,filtered or SUB,0)
+            for nodelist in ('false','true'):
+                params={'target':target,'list':nodelist,'ver':'3','refresh':'true'}
+                with self.subTest(target=target,nodelist=nodelist):
+                    status,report,_=app.request(self.source.origin+'/supported',**params)
+                    self.assertEqual(status,200,report)
+                    self.assertEqual(report['metrics'].get('nodes_exported'),1,report)
+                    self.assertTrue(report['output'])
+                    if filtered is None: continue
+                    status,report,_=app.request(self.source.origin+'/filtered',**params)
+                    self.assertEqual(status,422,report)
+                    self.assertEqual(report['metrics'].get('nodes_exported'),0,report)
+                    self.assertIn('No nodes can be exported',report['error'])
+                    status,body,_=get(app.origin+'/sub?'+urlencode({'url':self.source.origin+'/filtered',**params}))
+                    self.assertEqual(status,422,body)
+                    self.assertIn(b'No nodes can be exported',body)
+
+    def test_single_export_skips_incompatible_nodes(self):
+        app=self.app()
+        compatible=b'ss://'+base64.urlsafe_b64encode(b'aes-128-cfb:fixture-password')+b'@127.0.0.2:443#compatible-fixture'
+        incompatible=b'ss://'+base64.urlsafe_b64encode(b'aes-128-gcm:fixture-password')+b'@127.0.0.3:443#incompatible-fixture'
+        for nodes,expected in ((incompatible,0),(compatible+b'\n'+incompatible,1),(incompatible+b'\n'+compatible,1)):
+            self.source.routes['/ssr-input']=(200,base64.b64encode(nodes),0)
+            for nodelist in ('false','true'):
+                with self.subTest(nodes=nodes,nodelist=nodelist):
+                    status,report,_=app.request(self.source.origin+'/ssr-input',target='ssr',refresh='true',**{'list':nodelist})
+                    self.assertEqual(status,200 if expected else 422,report)
+                    self.assertEqual(report['metrics'].get('nodes_exported'),expected,report)
+                    if expected:
+                        output=report['output'].encode() if nodelist=='true' else base64.b64decode(report['output'])
+                        self.assertEqual(len(output.splitlines()),1,output)
+                        self.assertTrue(output.startswith(b'ssr://'),output)
     def test_failed_update_preserves_cache_and_manual_stale(self):
         app=self.app()
         rule=self.source.origin+'/rule'

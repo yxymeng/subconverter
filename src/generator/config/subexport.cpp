@@ -1005,6 +1005,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
         remarks_list.emplace_back(x.Remark);
     }
 
+    recordMetric("nodes_exported", remarks_list.size());
     if(ext.nodelist)
         return output_nodelist;
 
@@ -1095,11 +1096,13 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
 std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &ext)
 {
     /// types: SS=1 SSR=2 VMess=4 Trojan=8
-    std::string proxyStr, allLinks;
+    std::string allLinks;
+    size_t exported_count = 0;
     bool ss = GETBIT(types, 1), ssr = GETBIT(types, 2), vmess = GETBIT(types, 3), trojan = GETBIT(types, 4);
 
     for(Proxy &x : nodes)
     {
+        std::string proxyStr;
         std::string remark = x.Remark;
         std::string &hostname = x.Hostname, &password = x.Password, &method = x.EncryptMethod, &plugin = x.Plugin, &pluginopts = x.PluginOption, &protocol = x.Protocol, &protoparam = x.ProtocolParam, &obfs = x.OBFS, &obfsparam = x.OBFSParam, &id = x.UserId, &transproto = x.TransferProtocol, &host = x.Host, &path = x.Path, &faketype = x.FakeType;
         bool &tlssecure = x.TLSSecure;
@@ -1164,9 +1167,13 @@ std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &
         default:
             continue;
         }
+        if(proxyStr.empty())
+            continue;
         allLinks += proxyStr + "\n";
+        ++exported_count;
     }
 
+    recordMetric("nodes_exported", exported_count);
     if(ext.nodelist)
         return allLinks;
     else
@@ -1223,6 +1230,7 @@ std::string proxyToSSSub(std::string base_conf, std::vector<Proxy> &nodes, extra
         | AddMemberOrReplace("plugin_opts", rapidjson::Value(pluginopts.c_str(), pluginopts.size()), alloc);
         proxies.PushBack(proxy, alloc);
     }
+    recordMetric("nodes_exported", proxies.Size());
     return proxies | SerializeObject();
 }
 
@@ -1382,6 +1390,7 @@ void proxyToQuan(std::vector<Proxy> &nodes, INIReader &ini, std::vector<RulesetC
         nodelist.emplace_back(x);
     }
 
+    recordMetric("nodes_exported", nodelist.size());
     if(ext.nodelist)
         return;
 
@@ -1643,6 +1652,7 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
         nodelist.emplace_back(x);
     }
 
+    recordMetric("nodes_exported", nodelist.size());
     if(ext.nodelist)
         return;
 
@@ -1820,6 +1830,7 @@ std::string proxyToSSD(std::vector<Proxy> &nodes, std::string &group, std::strin
         }
         index++;
     }
+    recordMetric("nodes_exported", index);
     writer.EndArray();
     writer.EndObject();
     return "ssd://" + base64Encode(sb.GetString());
@@ -1925,6 +1936,7 @@ void proxyToMellow(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Rulese
         nodelist.emplace_back(x);
     }
 
+    recordMetric("nodes_exported", nodelist.size());
     ini.set_current_section("EndpointGroup");
 
     for(const ProxyGroupConfig &x : extra_proxy_group)
@@ -1985,6 +1997,7 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
     INIReader ini;
     std::string output_nodelist;
     std::vector<Proxy> nodelist;
+    size_t exported_count = 0;
 
     string_array remarks_list;
 
@@ -2136,8 +2149,10 @@ std::string proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
             nodelist.emplace_back(x);
             remarks_list.emplace_back(x.Remark);
         }
+        ++exported_count;
     }
 
+    recordMetric("nodes_exported", exported_count);
     if(ext.nodelist)
         return output_nodelist;
 
