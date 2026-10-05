@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import build_opener, ProxyHandler
 
 parser = argparse.ArgumentParser()
@@ -37,9 +38,12 @@ with tempfile.TemporaryDirectory(prefix='subconverter-smoke-') as directory:
         origin = 'http://'+endpoint
         opener = build_opener(ProxyHandler({}))
         def get(path):
-            with opener.open(origin+path, timeout=5) as response:
-                assert response.status == 200
-                return response.read()
+            try:
+                with opener.open(origin+path, timeout=5) as response:
+                    assert response.status == 200
+                    return response.read()
+            except HTTPError as error:
+                raise RuntimeError(str(error)+': '+error.read().decode()) from error
         for _ in range(100):
             try:
                 status = json.loads(get('/status'))
@@ -48,9 +52,9 @@ with tempfile.TemporaryDirectory(prefix='subconverter-smoke-') as directory:
         else: raise RuntimeError('Container did not become ready')
         assert status['build_commit'] == args.commit, status
         assert b'converter.js' in get('/')
-        assert b'parse' in get('/converter.js')
+        assert b'const api = {build, restore}' in get('/converter.js')
         subscription = base64.b64encode(b'trojan://smoke-secret@127.0.0.2:443#container-smoke').decode()
-        output = get('/sub?'+urlencode({'target':'trojan', 'url':'data:text/plain;base64,'+subscription, 'emoji':'false'}))
+        output = get('/sub?'+urlencode({'target':'trojan', 'url':'data:,'+subscription, 'emoji':'false'}))
         assert b'trojan://smoke-secret@127.0.0.2:443' in base64.b64decode(output)
         print(json.dumps({'version':report['version'], 'build_commit':args.commit,
                           'status':True, 'web':True, 'conversion':True}))
