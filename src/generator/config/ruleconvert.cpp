@@ -175,9 +175,15 @@ bool validRuleset(const std::string &content, int type)
                     pattern.find_first_of("<> \t\r\n/") != std::string::npos)) return false;
                 if(rule == "IP-ASN")
                 {
-                    unsigned int asn = 0;
-                    const auto parsed = std::from_chars(pattern.data(), pattern.data() + pattern.size(), asn);
-                    if(parsed.ec != std::errc() || parsed.ptr != pattern.data() + pattern.size()) return false;
+                    const auto value = native_source ? toUpper(pattern) : pattern;
+                    if(!(native_source && value == "UNKNOWN"))
+                    {
+                        std::string_view number = value;
+                        if(native_source && startsWith(value, "AS")) number.remove_prefix(2);
+                        unsigned int asn = 0;
+                        const auto parsed = std::from_chars(number.data(), number.data() + number.size(), asn);
+                        if(parsed.ec != std::errc() || parsed.ptr != number.data() + number.size()) return false;
+                    }
                 }
                 const bool cidr_rule = rule == "IP-CIDR" || rule == "IP-CIDR6" || rule == "SRC-IP-CIDR";
                 if(cidr_rule || rule == "SRC-IP")

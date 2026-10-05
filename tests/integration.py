@@ -406,6 +406,8 @@ class Integration(unittest.TestCase):
         app=self.app(extra='[common]\nsurge_rule_base=base/surge.conf')
         rule=self.source.origin+'/surge-rule'
         bodies=[b'IP-ASN,13335\n',b'IP-ASN,13335,no-resolve\n',
+                b'IP-ASN,AS13335\n',b'IP-ASN,AS4294967295,no-resolve\n',
+                b'IP-ASN,UNKNOWN\n',b'IP-ASN,unknown,no-resolve\n',
                 b'DOMAIN-WILDCARD,*.example.com\n',b'PROTOCOL,UDP\n',
                 b'SCRIPT,fixture-script\n',b'CELLULAR-RADIO,LTE\n',b'CELLULAR-CARRIER,289-67\n',
                 b'DEVICE-NAME,fixture-device\n',b'MAC-ADDRESS,aa:bb:cc:dd:ee:ff\n',
@@ -428,6 +430,8 @@ class Integration(unittest.TestCase):
                     self.assertIn('hit',[d['cache'] for d in report['downloads'] if d['phase']=='rules_download'])
         previous_cache={entry:entry.read_bytes() for entry in (app.root/'cache').glob('v2-*') if entry.read_bytes().endswith(bodies[-1])}
         for body in (b'IP-ASN,\n',b'IP-ASN,invalid\n',b'IP-ASN,-1\n',b'IP-ASN,4294967296\n',
+                     b'IP-ASN,AS\n',b'IP-ASN,AS-1\n',b'IP-ASN,AS4294967296\n',
+                     b'IP-ASN,AS13335oops\n',b'IP-ASN,UNKNOWNoops\n',
                      b'IP-CIDR6,2404:6800:::1\n',b'IP-CIDR6,192.0.2.1\n',b'IP-CIDR,999.0.0.1\n',
                      b'DOMAIN-WILDCARD,<html>error</html>\n',b'UNKNOWN,pattern\n',b'{"error":"unavailable"}\n'):
             with self.subTest(invalid=body):
@@ -473,7 +477,7 @@ class Integration(unittest.TestCase):
         source=self.source.origin+'/mixed-sub'
         self.source.routes['/mixed-sub']=(200,base64.b64encode(b'ss://'+base64.urlsafe_b64encode(b'aes-128-gcm:fixture-password')+b'@127.0.0.2:443#fixture-node'),0)
         rule=self.source.origin+'/mixed-surge-rule'
-        mixed=(b'# comment\nDOMAIN,kept.example\nUNKNOWN,ignored-secret\n'
+        mixed=(b'# comment\nDOMAIN,kept.example\nIP-ASN,AS13335\nIP-ASN,UNKNOWN\nUNKNOWN,ignored-secret\n'
                b'IP-CIDR,999.0.0.1/24\nIP-ASN,invalid\nDOMAIN-SUFFIX,kept-suffix.example\n')
         for prefix in ('','surge:'):
             config=self.config([prefix+rule])
