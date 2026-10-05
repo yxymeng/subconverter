@@ -34,7 +34,19 @@ std::string convertRuleset(const std::string &content, int type)
     std::string output, strLine;
 
     if(type == RULESET_SURGE)
-        return content;
+    {
+        std::stringstream lines(content);
+        bool skipped = false;
+        while(std::getline(lines, strLine, getLineBreak(content)))
+        {
+            const auto line = trimWhitespace(strLine, true, true);
+            if(line.empty() || line[0] == '#' || line[0] == ';' || startsWith(line, "//") || validRuleset(line, type))
+                output += strLine + '\n';
+            else
+                skipped = true;
+        }
+        return skipped ? output : content;
+    }
 
     if(regFind(content, "^payload:\\r?\\n")) /// Clash
     {
@@ -127,10 +139,12 @@ bool validRuleset(const std::string &content, int type)
         }
         catch(const YAML::Exception &) { return false; }
     }
-    const auto converted = convertRuleset(content, type);
+    // Native validation uses the original lines; native conversion filters invalid ones.
+    const auto converted = type == RULESET_SURGE ? content : convertRuleset(content, type);
     std::stringstream lines(converted);
     std::string line;
     bool found = false;
+    size_t valid = 0, skipped = 0;
     while(std::getline(lines, line, getLineBreak(converted)))
     {
         line = trimWhitespace(line, true, true);
@@ -140,50 +154,68 @@ bool validRuleset(const std::string &content, int type)
         auto comment = line.find(" //");
         if(comment == std::string::npos) comment = line.find("\t//");
         if(comment != std::string::npos) line = trimWhitespace(line.substr(0, comment), true, true);
-        const auto comma = line.find(',');
-        const auto rule = line.substr(0, comma);
-        const auto known = [&](const string_array &types) {
-            return std::find(types.begin(), types.end(), rule) != types.end();
-        };
-        const bool native_source = type == RULESET_SURGE && known(surge_source_types);
-        if(!native_source && !known(SurgeRuleTypes) && !known(ClashRuleTypes) && !known(QuanXRuleTypes) && !known(SingBoxRuleTypes)) return false;
-        if(type == RULESET_CLASH_IPCIDR && !startsWith(rule, "IP-CIDR")) return false;
-        if(comma == std::string::npos)
+        const auto valid_line = [&]()
         {
-            if(rule != "MATCH" && rule != "FINAL") return false;
-        }
-        else
-        {
-            const auto pattern = trimWhitespace(line.substr(comma + 1, line.find(',', comma + 1) - comma - 1), true, true);
-            if(pattern.empty() || ((rule == "DOMAIN" || rule == "DOMAIN-SUFFIX" || rule == "DOMAIN-KEYWORD" || rule == "DOMAIN-WILDCARD") &&
-                pattern.find_first_of("<> \t\r\n/") != std::string::npos)) return false;
-            if(rule == "IP-ASN")
+            const auto comma = line.find(',');
+            const auto rule = line.substr(0, comma);
+            const auto known = [&](const string_array &types) {
+                return std::find(types.begin(), types.end(), rule) != types.end();
+            };
+            const bool native_source = type == RULESET_SURGE && known(surge_source_types);
+            if(!native_source && !known(SurgeRuleTypes) && !known(ClashRuleTypes) && !known(QuanXRuleTypes) && !known(SingBoxRuleTypes)) return false;
+            if(type == RULESET_CLASH_IPCIDR && !startsWith(rule, "IP-CIDR")) return false;
+            if(comma == std::string::npos)
             {
-                unsigned int asn = 0;
-                const auto parsed = std::from_chars(pattern.data(), pattern.data() + pattern.size(), asn);
-                if(parsed.ec != std::errc() || parsed.ptr != pattern.data() + pattern.size()) return false;
+                if(rule != "MATCH" && rule != "FINAL") return false;
             }
-            const bool cidr_rule = rule == "IP-CIDR" || rule == "IP-CIDR6" || rule == "SRC-IP-CIDR";
-            if(cidr_rule || rule == "SRC-IP")
+            else
             {
-                const auto slash = pattern.find('/');
-                if(cidr_rule && slash == std::string::npos &&
-                   !(native_source && (rule == "IP-CIDR" || rule == "IP-CIDR6"))) return false;
-                const auto address = pattern.substr(0, slash);
-                const int family = rule == "IP-CIDR" ? AF_INET : rule == "IP-CIDR6" ? AF_INET6 :
-                    (address.find(':') == std::string::npos ? AF_INET : AF_INET6);
-                in6_addr parsed_address {};
-                if(inet_pton(family, address.c_str(), &parsed_address) != 1) return false;
-                if(slash != std::string::npos)
+                const auto pattern = trimWhitespace(line.substr(comma + 1, line.find(',', comma + 1) - comma - 1), true, true);
+                if(pattern.empty() || ((rule == "DOMAIN" || rule == "DOMAIN-SUFFIX" || rule == "DOMAIN-KEYWORD" || rule == "DOMAIN-WILDCARD") &&
+                    pattern.find_first_of("<> \t\r\n/") != std::string::npos)) return false;
+                if(rule == "IP-ASN")
                 {
-                    const auto mask = pattern.substr(slash + 1);
-                    unsigned int prefix = 0;
-                    const auto parsed = std::from_chars(mask.data(), mask.data() + mask.size(), prefix);
-                    if(parsed.ec != std::errc() || parsed.ptr != mask.data() + mask.size() ||
-                       prefix > (family == AF_INET ? 32u : 128u)) return false;
+                    unsigned int asn = 0;
+                    const auto parsed = std::from_chars(pattern.data(), pattern.data() + pattern.size(), asn);
+                    if(parsed.ec != std::errc() || parsed.ptr != pattern.data() + pattern.size()) return false;
+                }
+                const bool cidr_rule = rule == "IP-CIDR" || rule == "IP-CIDR6" || rule == "SRC-IP-CIDR";
+                if(cidr_rule || rule == "SRC-IP")
+                {
+                    const auto slash = pattern.find('/');
+                    if(cidr_rule && slash == std::string::npos &&
+                       !(native_source && (rule == "IP-CIDR" || rule == "IP-CIDR6"))) return false;
+                    const auto address = pattern.substr(0, slash);
+                    const int family = rule == "IP-CIDR" ? AF_INET : rule == "IP-CIDR6" ? AF_INET6 :
+                        (address.find(':') == std::string::npos ? AF_INET : AF_INET6);
+                    in6_addr parsed_address {};
+                    if(inet_pton(family, address.c_str(), &parsed_address) != 1) return false;
+                    if(slash != std::string::npos)
+                    {
+                        const auto mask = pattern.substr(slash + 1);
+                        unsigned int prefix = 0;
+                        const auto parsed = std::from_chars(mask.data(), mask.data() + mask.size(), prefix);
+                        if(parsed.ec != std::errc() || parsed.ptr != mask.data() + mask.size() ||
+                           prefix > (family == AF_INET ? 32u : 128u)) return false;
+                    }
                 }
             }
+            return true;
+        };
+        if(!valid_line())
+        {
+            if(type != RULESET_SURGE) return false;
+            ++skipped;
+            continue;
         }
+        ++valid;
+    }
+    if(skipped && !valid) return false;
+    if(skipped)
+    {
+        const auto warning = std::to_string(skipped) + " invalid Surge ruleset lines skipped";
+        recordWarning(warning);
+        writeLog(0, warning, LOG_LEVEL_WARNING);
     }
     return found;
 }

@@ -468,6 +468,42 @@ class Integration(unittest.TestCase):
         status,report,_=app.request(self.source.origin+'/sub',self.config([self.source.origin+'/uncached-rule']),refresh='true',use_stale='true')
         self.assertEqual(status,502,report); self.assertEqual(report['output'],'')
 
+    def test_surge_mixed_valid_and_invalid_lines(self):
+        app=self.app(extra='[common]\nsurge_rule_base=base/surge.conf\nsingbox_rule_base=base/singbox.json')
+        source=self.source.origin+'/mixed-sub'
+        self.source.routes['/mixed-sub']=(200,base64.b64encode(b'ss://'+base64.urlsafe_b64encode(b'aes-128-gcm:fixture-password')+b'@127.0.0.2:443#fixture-node'),0)
+        rule=self.source.origin+'/mixed-surge-rule'
+        mixed=(b'# comment\nDOMAIN,kept.example\nUNKNOWN,ignored-secret\n'
+               b'IP-CIDR,999.0.0.1/24\nIP-ASN,invalid\nDOMAIN-SUFFIX,kept-suffix.example\n')
+        for prefix in ('','surge:'):
+            config=self.config([prefix+rule])
+            self.source.routes['/mixed-surge-rule']=(200,mixed,0)
+            for target,version in (('clash','4'),('surge','2'),('surge','4'),('singbox','4')):
+                with self.subTest(prefix=prefix,target=target,version=version):
+                    status,report,_=app.request(source,config,target=target,ver=version,refresh='true')
+                    self.assertEqual(status,200,report)
+                    if target=='surge' and version=='4':
+                        self.assertIn('RULE-SET,'+rule+',DIRECT',report['output'])
+                    else:
+                        self.assertIn('kept.example',report['output'])
+                        self.assertIn('kept-suffix.example',report['output'])
+                    for invalid in ('ignored-secret','999.0.0.1','IP-ASN,invalid'):
+                        self.assertNotIn(invalid,report['output'])
+                    self.assertTrue(any('invalid Surge ruleset lines skipped' in warning for warning in report['warnings']))
+                    self.assertNotIn('ignored-secret',(app.root/'stderr.log').read_text())
+            cached={entry:entry.read_bytes() for entry in (app.root/'cache').glob('v2-*') if entry.read_bytes().endswith(mixed)}
+            self.assertTrue(cached)
+            before=self.source.counts['/mixed-surge-rule']
+            self.assertEqual(app.request(self.source.origin+'/sub',config)[0],200)
+            self.assertEqual(self.source.counts['/mixed-surge-rule'],before)
+            self.source.routes['/mixed-surge-rule']=(200,b'# comment\nUNKNOWN,ignored-secret\nIP-ASN,invalid\n',0)
+            status,report,_=app.request(self.source.origin+'/sub',config,refresh='true')
+            self.assertEqual(status,502,report)
+            for entry,content in cached.items(): self.assertEqual(entry.read_bytes(),content)
+            status,report,_=app.request(self.source.origin+'/sub',config,use_stale='true')
+            self.assertEqual(status,200,report)
+            self.assertIn('kept.example',report['output'])
+
     def test_non_rule_fallback_obeys_legacy_setting(self):
         for fallback in (True,False):
             template=self.source.origin+'/template'
