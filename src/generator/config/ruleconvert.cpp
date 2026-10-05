@@ -48,9 +48,25 @@ std::string convertRuleset(const std::string &content, int type)
         return skipped ? output : content;
     }
 
-    if(regFind(content, "^payload:\\r?\\n")) /// Clash
+    const bool clash_source = type == RULESET_CLASH_DOMAIN || type == RULESET_CLASH_IPCIDR || type == RULESET_CLASH_CLASSICAL;
+    if(clash_source || regFind(content, "^payload:\\r?\\n")) /// Clash
     {
-        output = regReplace(regReplace(content, "payload:\\r?\\n", "", true), R"(\s?^\s*-\s+('|"?)(.*)\1$)", "\n$2", true);
+        if(clash_source)
+        {
+            try
+            {
+                const auto payload = YAML::Load(content)["payload"];
+                if(!payload.IsSequence()) return {};
+                for(const auto &entry : payload)
+                {
+                    if(!entry.IsScalar()) return {};
+                    output += entry.as<std::string>() + '\n';
+                }
+            }
+            catch(const YAML::Exception &) { return {}; }
+        }
+        else
+            output = regReplace(regReplace(content, "payload:\\r?\\n", "", true), R"(\s?^\s*-\s+('|"?)(.*)\1$)", "\n$2", true);
         if(type == RULESET_CLASH_CLASSICAL) /// classical type
             return output;
         std::stringstream ss;

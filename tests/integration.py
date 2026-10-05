@@ -385,10 +385,16 @@ class Integration(unittest.TestCase):
         for prefix,body,expected in [('',b'# comment\nDOMAIN,valid.example // note\n','valid.example'),
                                      ('quanx:',b'host,valid.example,DIRECT\n','valid.example'),
                                      ('clash-domain:',b'payload:\n  - +.valid.example\n','valid.example'),
+                                     ('clash-domain:',b'---\npayload:\n  - +.valid.example\n','valid.example'),
+                                     ('clash-domain:',b'# fixture\npayload: ["+.valid.example"]\n','valid.example'),
                                      ('clash-ipcidr:',b'payload:\n  - 192.0.2.0/24\n','192.0.2.0/24'),
+                                     ('clash-ipcidr:',b'---\npayload:\n  - 192.0.2.0/24\n','192.0.2.0/24'),
+                                     ('clash-ipcidr:',b'payload: [&net 192.0.2.0/24, *net]\n','192.0.2.0/24'),
                                      ('',b'IP-CIDR6,::ffff:192.0.2.0/128\n','::ffff:192.0.2.0/128'),
                                      ('',b'SRC-IP-CIDR,2001:db8::/32\n','2001:db8::/32'),
                                      ('clash-classic:',b'payload:\n  - DOMAIN,valid.example\n','valid.example'),
+                                     ('clash-classic:',b'---\npayload:\n  - DOMAIN,valid.example\n','valid.example'),
+                                     ('clash-classic:',b'payload: ["DOMAIN,valid.example"]\n','valid.example'),
                                      ('clash-domain:',b'payload: []\n','MATCH,DIRECT'),
                                      ('',b'# intentionally empty ruleset\n','MATCH,DIRECT')]:
             self.source.routes['/rule']=(200,body,0)
@@ -396,8 +402,11 @@ class Integration(unittest.TestCase):
             status,report,_=app.request(self.source.origin+'/sub',config,refresh='true')
             self.assertEqual(status,200,report); self.assertIn(expected,report['output'])
         for prefix,body in [('clash-domain:',b'payload:\n  - <html>error</html>\n'),
+                            ('clash-domain:',b'payload: ["<html>error</html>"]\n'),
                             ('clash-ipcidr:',b'payload:\n  - valid.example\n'),
-                            ('clash-classic:',b'payload:\n  - {error: unavailable}\n')]:
+                            ('clash-ipcidr:',b'payload: [999.0.0.1/24]\n'),
+                            ('clash-classic:',b'payload:\n  - {error: unavailable}\n'),
+                            ('clash-classic:',b'payload: [{error: unavailable}]\n')]:
             self.source.routes['/rule']=(200,body,0)
             status,report,_=app.request(self.source.origin+'/sub',self.config([prefix+rule]),refresh='true')
             self.assertEqual(status,502,report)
