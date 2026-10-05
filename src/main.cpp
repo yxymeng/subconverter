@@ -120,13 +120,16 @@ void cron_tick_caller()
 static nlohmann::json startupReport()
 {
     const auto settings = downloadSettings();
+    const auto endpoint = boundListenEndpoint();
     const auto proxy = [](const std::string &setting) {
         auto resolved = parseProxy(setting);
         return nlohmann::json {{"mode", setting == "NONE" || setting.empty() ? "direct" : setting == "SYSTEM" ? "system" : "explicit"},
             {"selected", resolved.empty() ? "direct" : safeSource(resolved)}};
     };
     return {{"version", VERSION}, {"build_commit", BUILD_COMMIT},
-        {"config", actual_config_path}, {"listen", global.listenAddress}, {"port", global.listenPort},
+        {"config", actual_config_path},
+        {"listen", endpoint->port ? endpoint->address : global.listenAddress},
+        {"port", endpoint->port ? endpoint->port : global.listenPort},
         {"proxies", {{"subscription", proxy(global.proxySubscription)}, {"config", proxy(global.proxyConfig)}, {"ruleset", proxy(global.proxyRuleset)}}},
         {"max_parallel_downloads", settings->maxParallelDownloads}, {"download_timeout", settings->downloadTimeout},
         {"connect_timeout", settings->connectTimeout}};
@@ -339,8 +342,6 @@ int main(int argc, char *argv[])
     if(!env_port.empty())
         global.listenPort = to_int(env_port, global.listenPort);
     listener_args args = {global.listenAddress, global.listenPort, global.maxPendingConns, global.maxConcurThreads, cron_tick_caller, 200};
-    global.boundListenAddress = args.listen_address;
-    global.boundListenPort = args.port;
     //std::cout<<"Serving HTTP @ http://"<<listen_address<<":"<<listen_port<<std::endl;
     const int server_result = webServer.start_web_server_multi(&args);
 

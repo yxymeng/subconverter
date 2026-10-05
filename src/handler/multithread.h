@@ -25,6 +25,7 @@ void safe_set_streams(RegexMatchConfigs data);
 void safe_set_times(RegexMatchConfigs data);
 struct Settings;
 void safe_set_settings(Settings settings);
+void resizeFetchExecutor(int count);
 std::shared_future<std::string> fetchFileAsync(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local = true, bool async = false, std::function<bool(const std::string &)> validate_content = {});
 std::string fetchFile(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local = true);
 

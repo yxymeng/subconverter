@@ -18,6 +18,14 @@
 static std::shared_ptr<const DownloadSettings> active_download_settings = std::make_shared<DownloadSettings>();
 std::shared_ptr<const DownloadSettings> downloadSettings() { return std::atomic_load(&active_download_settings); }
 
+static std::shared_ptr<const BoundListenEndpoint> bound_listen_endpoint = std::make_shared<BoundListenEndpoint>();
+std::shared_ptr<const BoundListenEndpoint> boundListenEndpoint() { return std::atomic_load(&bound_listen_endpoint); }
+void publishBoundListenEndpoint(const std::string &address, int port)
+{
+    std::shared_ptr<const BoundListenEndpoint> endpoint = std::make_shared<BoundListenEndpoint>(BoundListenEndpoint {address, port});
+    std::atomic_store(&bound_listen_endpoint, std::move(endpoint));
+}
+
 static std::shared_ptr<const DownloadSettings> buildDownloadSettings(Settings &global)
 {
     global.downloadTimeout = std::clamp(global.downloadTimeout, 1, 300);
@@ -1187,6 +1195,7 @@ bool readConf(const std::string *new_config)
             schedules_changed = true;
             refresh_schedule();
         }
+        resizeFetchExecutor(settings->maxParallelDownloads);
         if(new_config && fileWriteAtomic(global.prefPath, *new_config) != 0)
         {
             writeLog(0, "Cannot write updated preference file", LOG_LEVEL_ERROR);

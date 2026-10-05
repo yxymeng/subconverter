@@ -272,8 +272,7 @@ int WebServer::start_web_server_multi(listener_args *args)
         writeLog(0, "Cannot determine the bound listener endpoint", LOG_LEVEL_FATAL);
         return -1;
     }
-    global.boundListenAddress = bound_host;
-    global.boundListenPort = to_int(bound_port);
+    publishBoundListenEndpoint(bound_host, to_int(bound_port));
     writeLog(0, "Startup completed. Serving HTTP @ http://" + args->listen_address + ":" + std::to_string(args->port), LOG_LEVEL_INFO);
 
     std::thread thread([&]()

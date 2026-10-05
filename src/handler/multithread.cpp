@@ -77,6 +77,12 @@ class FetchExecutor
     std::vector<std::thread> workers;
     bool stopping = false;
 public:
+    void resize(int count)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if(!workers.empty()) ensureWorkers(count);
+        ready.notify_all();
+    }
     void ensureWorkers(int count)
     {
         for(size_t i = workers.size(); i < static_cast<size_t>(count); ++i)
@@ -113,14 +119,21 @@ public:
         return result;
     }
 };
+
+FetchExecutor &fetchExecutor()
+{
+    static FetchExecutor executor;
+    return executor;
 }
+}
+
+void resizeFetchExecutor(int count) { fetchExecutor().resize(count); }
 
 std::shared_future<std::string> fetchFileAsync(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local, bool async, std::function<bool(const std::string &)> validate_content)
 {
-    static FetchExecutor executor;
     auto context = currentDiagnostics();
     auto phase = currentPhase();
-    auto result = executor.submit([path, proxy, cache_ttl, find_local, context, phase, validate_content] {
+    auto result = fetchExecutor().submit([path, proxy, cache_ttl, find_local, context, phase, validate_content] {
         DiagnosticScope scope(context, phase);
         if(find_local && fileExist(path, true))
         {

@@ -54,7 +54,7 @@ INI 中 JSON 字符串不加外层单引号，YAML 可用单引号包裹。入�
 
 `proxy_subscription`、`proxy_config`、`proxy_ruleset` 分别用于订阅、配置/模板、规则。`NONE` 或空字符串明确直连；`SYSTEM` 读取 Windows 当前用户的静态 WinINET 代理，Linux 依次取首个非空 all_proxy/ALL_PROXY/http_proxy/HTTP_PROXY/https_proxy/HTTPS_PROXY；显式地址直接使用。选定代理不会被 NO_PROXY 隐式绕过。Windows 支持统一代理及 https/http/socks 分项，优先 https、http、socks；PAC 自动配置和系统绕过列表尚未实现。SYSTEM 无可用静态代理时直连。系统 CA 和 TLS 下载校验策略留待单独迁移，现有下载层仍沿用原项目的证书校验行为。
 
-- `/status`：启动状态，代理地址脱敏。
+- `/status`：运行状态和实际绑定的监听端点，代理地址脱敏。重载配置不会重新绑定 socket；新配置中的监听地址和端口可通过 `--check` 查看。
 - `/sub?...`：保持转换正文，响应头增加 X-Request-ID。
 - `/diagnose?...`：使用相同转换参数，返回 success、status_code、request_id、phases、downloads、warnings、metrics，以及成功时的实际 output。失败使用 HTTP 4xx/5xx，并附 JSON 原因。
 - `/refreshrules`：按原有 Token 权限强刷服务端默认规则，等待完整更新后响应；不刷新某个请求指定的外部配置规则。

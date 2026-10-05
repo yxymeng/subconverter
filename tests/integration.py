@@ -623,12 +623,51 @@ class Integration(unittest.TestCase):
             finally: released.set()
             self.assertEqual(first.result()[0],200)
 
+    def test_raising_limit_expands_an_existing_ruleset_queue(self):
+        app=self.app(parallel=1,extra='download_timeout=10')
+        entered=threading.Event(); released=threading.Event()
+        def blocker(number,headers):
+            entered.set(); released.wait(8)
+            return (200,b'DOMAIN,queued-0.example\n',0)
+        self.source.routes['/queued-rule-0']=blocker
+        urls=[self.source.origin+f'/queued-rule-{i}' for i in range(8)]
+        for i in range(1,8):
+            self.source.routes[f'/queued-rule-{i}']=(200,f'DOMAIN,queued-{i}.example\n'.encode(),0)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            conversion=pool.submit(app.request,self.source.origin+'/sub',self.config(urls))
+            try:
+                self.assertTrue(entered.wait(2))
+                time.sleep(.2)  # All remaining rules have been submitted to the existing queue.
+                self.assertEqual(sum(self.source.counts[f'/queued-rule-{i}'] for i in range(1,8)),0)
+                app.pref.write_text(app.pref.read_text().replace('max_parallel_downloads=1','max_parallel_downloads=4'))
+                self.assertEqual(get(app.origin+'/readconf')[0],200)
+                deadline=time.monotonic()+2
+                while time.monotonic()<deadline:
+                    if all(self.source.counts[f'/queued-rule-{i}']==1 for i in range(1,8)): break
+                    time.sleep(.01)
+                else: self.fail('Existing queued rules did not use the raised capacity')
+                self.assertFalse(conversion.done(),'First rule must still be blocked')
+            finally: released.set()
+            status,report,_=conversion.result(timeout=5)
+            self.assertEqual(status,200,report)
+            positions=[report['output'].index(f'queued-{i}.example') for i in range(8)]
+            self.assertEqual(positions,sorted(positions))
+
     @unittest.skipUnless(sys.platform.startswith('linux'), 'DNS interposition requires Linux')
     def test_dns_changes_cannot_reach_listener(self):
-        if not shutil.which('cc') or not shutil.which('ldd'):
+        if not shutil.which('cc'):
             self.skipTest('DNS interposition requires a C compiler and dynamic loader')
-        if subprocess.run(['ldd',str(BINARY)],capture_output=True).returncode:
-            self.skipTest('Static binaries cannot load a DNS interposer')
+        # musl ldd can exit zero for static files; inspect ELF PT_INTERP instead.
+        with BINARY.open('rb') as binary:
+            header=binary.read(64)
+            endian='<' if header[5]==1 else '>'
+            offset=struct.unpack_from(endian+('Q' if header[4]==2 else 'I'),header,32 if header[4]==2 else 28)[0]
+            stride,count=struct.unpack_from(endian+'HH',header,54 if header[4]==2 else 42)
+            dynamic=False
+            for index in range(count):
+                binary.seek(offset+index*stride)
+                dynamic=dynamic or struct.unpack(endian+'I',binary.read(4))[0]==3
+            if not dynamic: self.skipTest('Static binaries cannot load a DNS interposer')
         with tempfile.TemporaryDirectory(prefix='subconverter-dns-') as directory:
             library=Path(directory)/'dns-rebind.so'
             log=Path(directory)/'dns.log'
@@ -830,8 +869,12 @@ class Integration(unittest.TestCase):
                     status,raw,_=get(app.origin+'/status')
                     self.assertEqual(status,200)
                     state=json.loads(raw)
-                    self.assertEqual(state['listen'],'127.0.0.2' if change_address else '0.0.0.0')
-                    self.assertEqual(state['port'],self.source.server.server_port if change_port else app.port)
+                    self.assertEqual(state['listen'],'0.0.0.0')
+                    self.assertEqual(state['port'],app.port)
+                    checked=subprocess.run([str(BINARY),'-f',str(app.pref),'--check'],capture_output=True,text=True,check=True)
+                    configured=json.loads(checked.stdout[checked.stdout.index('{'):])
+                    self.assertEqual(configured['listen'],'127.0.0.2' if change_address else '0.0.0.0')
+                    self.assertEqual(configured['port'],self.source.server.server_port if change_port else app.port)
                     status,report,_=app.request(self.source.origin+'/sub',refresh='true')
                     self.assertEqual(status,200,report)
                     self.assertIn('fixture-node',report['output'])
@@ -858,6 +901,27 @@ class Integration(unittest.TestCase):
         status,report,_=app.request(self.source.origin+'/first-hop')
         self.assertGreaterEqual(status,400,report); self.assertIn('Self-referencing',str(report))
         self.assertEqual(self.source.counts['/first-hop'],1); self.assertEqual(self.source.counts['/second-hop'],1)
+
+    def test_bound_endpoint_during_concurrent_reload_and_download(self):
+        app=self.app(listen='0.0.0.0',workers=8,fallback=False)
+        original=app.pref.read_text()
+        self.source.routes['/concurrent-bound-redirect']=(302,b'',0,{'Location':app.origin+'/sub?target=clash'})
+        def reload():
+            for index in range(8):
+                app.pref.write_text(original.replace('listen=0.0.0.0','listen=127.0.0.2').replace(f'port={app.port}',f'port={self.source.server.server_port}'))
+                self.assertEqual(get(app.origin+'/readconf')[0],200)
+        def download():
+            for index in range(8):
+                status,report,_=app.request(self.source.origin+'/concurrent-bound-redirect',refresh='true')
+                self.assertGreaterEqual(status,400,report)
+                self.assertIn('Self-referencing',str(report))
+                status,report,_=app.request(self.source.origin+'/concurrent-external',refresh='true')
+                self.assertEqual(status,200,report)
+                state=json.loads(get(app.origin+'/status')[1])
+                self.assertEqual((state['listen'],state['port']),('0.0.0.0',app.port))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures=[pool.submit(reload),pool.submit(download)]
+            for future in futures: future.result(timeout=15)
 
     def test_offline_generation_obeys_required_rule_policy(self):
         app=self.app()

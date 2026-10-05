@@ -153,8 +153,9 @@ static bool selfRequest(const std::string &url);
 
 static bool selfEndpoint(const char *host, int port)
 {
-    return global.boundListenPort != 0 && port == global.boundListenPort &&
-        hostPointsToLocalServer(host, global.boundListenAddress);
+    const auto endpoint = boundListenEndpoint();
+    return endpoint->port != 0 && port == endpoint->port &&
+        hostPointsToLocalServer(host, endpoint->address);
 }
 
 static curl_socket_t guardedSocket(void *client, curlsocktype, curl_sockaddr *address)
@@ -264,7 +265,8 @@ static inline void curl_set_common_options(CURL *curl_handle, const char *url, c
 
 static bool selfRequest(const std::string &url)
 {
-    if(global.boundListenPort == 0) return false;
+    const auto endpoint = boundListenEndpoint();
+    if(endpoint->port == 0) return false;
     CURLU *parsed = curl_url();
     defer(curl_url_cleanup(parsed);)
     if(curl_url_set(parsed, CURLUPART_URL, url.c_str(), 0) != CURLUE_OK) return false;
@@ -272,8 +274,8 @@ static bool selfRequest(const std::string &url)
     defer(curl_free(host); curl_free(port);)
     if(curl_url_get(parsed, CURLUPART_HOST, &host, 0) != CURLUE_OK ||
        curl_url_get(parsed, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) != CURLUE_OK) return false;
-    return to_int(port) == global.boundListenPort &&
-        hostPointsToLocalServer(host, global.boundListenAddress);
+    return to_int(port) == endpoint->port &&
+        hostPointsToLocalServer(host, endpoint->address);
 }
 
 static int curlGet(const FetchArgument &argument, FetchResult &result)
