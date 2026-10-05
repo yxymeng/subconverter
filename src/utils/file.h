@@ -20,6 +20,7 @@ std::string fileGet(const std::string &path, bool scope_limit = false);
 bool fileExist(const std::string &path, bool scope_limit = false);
 bool fileCopy(const std::string &source, const std::string &dest);
 int fileWrite(const std::string &path, const std::string &content, bool overwrite);
+int fileWriteAtomic(const std::string &path, const std::string &content);
 
 template<typename F>
 int operateFiles(const std::string &path, F &&op)

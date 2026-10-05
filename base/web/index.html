@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Subconverter · 订阅转换</title><link rel="stylesheet" href="style.css"><script src="converter.js" defer></script><script src="app.js" defer></script></head>
+<body>
+<header><a class="brand" href="/">subconverter<span>自用订阅转换</span></a><span id="service" class="badge">连接本地服务…</span></header>
+<main>
+<div class="intro"><div class="eyebrow">CONVERT / INSPECT / CONNECT</div><h1>让订阅适配你的客户端。</h1><p>输入订阅，选择配置，预览转换结果。当前页面使用你正在访问的转换服务。</p></div>
+<div class="workspace">
+<section class="card"><div class="section-title"><h2>转换设置</h2><span class="step">01</span></div>
+<form id="form">
+<label for="url">订阅或节点链接 <span class="hint">每行一份，支持合并</span></label><textarea id="url" name="url" rows="4" placeholder="https://example.com/subscription" autocomplete="off" spellcheck="false"></textarea>
+<div class="two"><div><label for="target">目标格式</label><select id="target" name="target"><option value="clash">Clash / Mihomo</option><option value="singbox">sing-box</option><option value="surge">Surge</option><option value="loon">Loon</option><option value="quanx">Quantumult X</option><option value="ss">Shadowsocks</option><option value="mixed">混合节点链接</option></select></div><div><label for="preset">规则配置</label><select id="preset"><option value="default">服务端默认</option><option value="yxymeng">yxymeng · Clash.ini</option><option value="custom">自定义地址</option></select></div></div>
+<div id="config-field" hidden><label for="config">外部配置地址</label><input id="config" name="config" type="text" placeholder="https://…/Clash.ini" autocomplete="off"></div>
+<details><summary>进阶参数</summary><div class="two"><div><label for="include">包含节点（正则）</label><input id="include" name="include"></div><div><label for="exclude">排除节点（正则）</label><input id="exclude" name="exclude"></div></div><label for="filename">输出文件名</label><input id="filename" name="filename" placeholder="config.yaml"><div class="two"><div><label for="emoji">添加 Emoji</label><select name="emoji" id="emoji"><option value="">服务端默认</option><option value="true">开启</option><option value="false">关闭</option></select></div><div><label for="udp">UDP</label><select name="udp" id="udp"><option value="">服务端默认</option><option value="true">开启</option><option value="false">关闭</option></select></div><div><label for="sort">节点排序</label><select name="sort" id="sort"><option value="">服务端默认</option><option value="true">开启</option><option value="false">关闭</option></select></div></div><label for="token">本服务访问 Token（按需）</label><input id="token" name="token" type="password" autocomplete="off"><p class="hint">生成的转换链接可能包含订阅凭据；复制和分享前请确认接收者。</p></details>
+<div class="options policy"><label><input type="checkbox" name="refresh" id="refresh">强制刷新</label><label><input type="checkbox" name="use_stale" id="use_stale">手动使用已缓存规则</label></div><p class="hint">默认复用有效缓存，过期后等待更新；规则更新失败时保留旧版并报错。</p>
+<div class="actions"><button type="submit" class="primary" id="preview">转换并预览 <span>→</span></button><button type="button" id="generate">生成链接</button></div>
+</form>
+<details class="import"><summary>从已有转换链接还原</summary><label class="sr-only" for="existing">已有转换链接</label><textarea id="existing" rows="2" placeholder="http://…/sub?target=clash&url=…" autocomplete="off"></textarea><button type="button" id="restore">还原到表单</button><p class="hint">还原参数后，链接使用当前服务地址。</p></details>
+</section>
+<section class="card results"><div class="section-title"><h2>转换结果</h2><span class="step">02</span></div><div id="message" class="message" role="status" aria-live="polite">等待输入订阅。生成链接后，点击转换可检查实际结果。</div>
+<label for="link">转换链接</label><textarea id="link" rows="3" readonly placeholder="生成的链接将显示在这里" spellcheck="false"></textarea><div class="actions secondary"><button type="button" id="copy" disabled>复制链接</button><button type="button" id="download" disabled>下载结果</button></div>
+<div class="preview-head"><h3>内容预览</h3><span id="size" class="hint">尚未转换</span></div><pre id="output" tabindex="0">转换后的配置会显示在这里。</pre>
+<details id="diagnostics"><summary>诊断与耗时 <span id="request-id" class="hint"></span></summary><div id="phases" class="metrics"></div><div class="table-scroll"><table><thead><tr><th>源站 / 标识</th><th>状态</th><th>缓存</th><th>耗时</th></tr></thead><tbody id="downloads"></tbody></table></div><div id="warnings" class="hint"></div></details>
+</section>
+</div>
+<footer>Subconverter <span id="version"></span><span>本机 · 局域网 · 同源转换</span></footer>
+</main></body></html>

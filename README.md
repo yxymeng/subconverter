@@ -1,5 +1,8 @@
 # subconverter
 
+本 fork 的后续优化已加入下载诊断、严格规则缓存更新、受控并发和同源 Web 转换入口。详见 [日常使用与诊断](docs/usage.md)、[优化路线](docs/optimization-roadmap.md) 与 [实施验收](docs/implementation-validation.md)。
+
+
 用于在多种代理订阅格式之间转换的本地服务。本仓库基于
 [tindy2013/subconverter](https://github.com/tindy2013/subconverter)，并提供 Windows x64 发布包。
 

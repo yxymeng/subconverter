@@ -1,0 +1,13 @@
+.git
+.cloud-setup
+build
+cmake-build-*
+CMakeFiles
+CMakeCache.txt
+subconverter
+subconverter.exe
+base/cache
+base/pref.ini
+base/pref.toml
+base/pref.yml
+**/__pycache__

@@ -1,5 +1,9 @@
 #include <future>
 #include <thread>
+#include <queue>
+#include <functional>
+#include <condition_variable>
+#include "handler/diagnostics.h"
 
 #include "handler/settings.h"
 #include "utils/network.h"
@@ -58,20 +62,89 @@ void safe_set_times(RegexMatchConfigs data)
     global.timeNodeRules.swap(data);
 }
 
-std::shared_future<std::string> fetchFileAsync(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local, bool async)
+void safe_set_settings(Settings settings)
 {
-    std::shared_future<std::string> retVal;
-    /*if(vfs::vfs_exist(path))
-        retVal = std::async(std::launch::async, [path](){return vfs::vfs_get(path);});
-    else */if(find_local && fileExist(path, true))
-        retVal = std::async(std::launch::async, [path](){return fileGet(path, true);});
-    else if(isLink(path))
-        retVal = std::async(std::launch::async, [path, proxy, cache_ttl](){return webGet(path, proxy, cache_ttl);});
-    else
-        return std::async(std::launch::async, [](){return std::string();});
-    if(!async)
-        retVal.wait();
-    return retVal;
+    std::scoped_lock guard(on_emoji, on_rename, on_stream, on_time);
+    global = std::move(settings);
+}
+
+namespace {
+class FetchExecutor
+{
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::queue<std::function<void()>> tasks;
+    std::vector<std::thread> workers;
+    bool stopping = false;
+public:
+    void resize(int count)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if(!workers.empty()) ensureWorkers(count);
+        ready.notify_all();
+    }
+    void ensureWorkers(int count)
+    {
+        for(size_t i = workers.size(); i < static_cast<size_t>(count); ++i)
+            workers.emplace_back([this] {
+                while(true)
+                {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex);
+                        ready.wait(lock, [this] { return stopping || !tasks.empty(); });
+                        if(stopping && tasks.empty()) return;
+                        task = std::move(tasks.front()); tasks.pop();
+                    }
+                    task();
+                }
+            });
+    }
+    ~FetchExecutor()
+    {
+        { std::lock_guard<std::mutex> lock(mutex); stopping = true; }
+        ready.notify_all();
+        for(auto &worker : workers) worker.join();
+    }
+    std::shared_future<std::string> submit(std::function<std::string()> fn)
+    {
+        auto task = std::make_shared<std::packaged_task<std::string()>>(std::move(fn));
+        auto result = task->get_future().share();
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            ensureWorkers(downloadSettings()->maxParallelDownloads);
+            tasks.emplace([task] { (*task)(); });
+        }
+        ready.notify_one();
+        return result;
+    }
+};
+
+FetchExecutor &fetchExecutor()
+{
+    static FetchExecutor executor;
+    return executor;
+}
+}
+
+void resizeFetchExecutor(int count) { fetchExecutor().resize(count); }
+
+std::shared_future<std::string> fetchFileAsync(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local, bool async, std::function<bool(const std::string &)> validate_content, std::string validation_policy)
+{
+    auto context = currentDiagnostics();
+    auto phase = currentPhase();
+    auto result = fetchExecutor().submit([path, proxy, cache_ttl, find_local, context, phase, validate_content, validation_policy] {
+        DiagnosticScope scope(context, phase);
+        if(find_local && fileExist(path, true))
+        {
+            auto content = fileGet(path, true);
+            return !validate_content || validate_content(content) ? content : std::string();
+        }
+        if(isLink(path)) return webGet(path, proxy, cache_ttl, nullptr, nullptr, validate_content, false, validation_policy);
+        return std::string();
+    });
+    if(!async) result.wait();
+    return result;
 }
 
 std::string fetchFile(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local)

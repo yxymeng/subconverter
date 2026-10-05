@@ -2,6 +2,8 @@
 #define SETTINGS_H_INCLUDED
 
 #include <string>
+#include <memory>
+#include "utils/map_extra.h"
 
 #include "config/crontask.h"
 #include "config/regmatch.h"
@@ -16,6 +18,7 @@
 
 struct Settings
 {
+    bool configurationLoaded = false;
     //common settings
     std::string prefPath = "pref.ini", defaultExtConfig;
     string_array excludeRemarks, includeRemarks;
@@ -26,11 +29,13 @@ struct Settings
     int listenPort = 25500, maxPendingConns = 10, maxConcurThreads = 4;
     bool prependInsert = true, skipFailedLinks = false;
     bool APIMode = true, writeManagedConfig = false, enableRuleGen = true, updateRulesetOnRequest = false, overwriteOriginalRules = true;
-    bool printDbgInfo = false, CFWChildProcess = false, appendUserinfo = true, asyncFetchRuleset = false, surgeResolveHostname = true;
+    bool printDbgInfo = false, CFWChildProcess = false, appendUserinfo = true, asyncFetchRuleset = true, surgeResolveHostname = true;
     std::string accessToken, basePath = "base";
     std::string custom_group;
     int logLevel = LOG_LEVEL_VERBOSE;
     long maxAllowedDownloadSize = 1048576L;
+    int downloadTimeout = 15, connectTimeout = 5, maxParallelDownloads = 4;
+    std::string subscriptionHeadersConfig = "{}";
     string_map aliases;
 
     //global variables for template
@@ -98,7 +103,24 @@ struct ExternalConfig
 
 extern Settings global;
 
-int importItems(string_array &target, bool scope_limit = true);
+// Published before serving; configuration swaps never mutate this snapshot.
+struct BoundListenEndpoint
+{
+    std::string address;
+    int port = 0;
+};
+std::shared_ptr<const BoundListenEndpoint> boundListenEndpoint();
+void publishBoundListenEndpoint(const std::string &address, int port);
+
+struct DownloadSettings
+{
+    int downloadTimeout = 15, connectTimeout = 5, maxParallelDownloads = 4;
+    std::map<std::string, string_icase_map> subscriptionHeaders;
+};
+// A complete immutable snapshot keeps downloads safe while preferences reload.
+std::shared_ptr<const DownloadSettings> downloadSettings();
+
+int importItems(string_array &target, bool scope_limit = true, const Settings &settings = global);
 int loadExternalConfig(std::string &path, ExternalConfig &ext);
 
 template <class... Args>

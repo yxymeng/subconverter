@@ -23,6 +23,7 @@ struct parse_settings
     RegexMatchConfigs *time_rules = nullptr;
     std::string *sub_info = nullptr;
     bool authorized = false;
+    std::string error;
     string_icase_map *request_header = nullptr;
 #ifndef NO_JS_RUNTIME
     qjs::Runtime *js_runtime = nullptr;

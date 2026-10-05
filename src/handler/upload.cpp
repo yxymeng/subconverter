@@ -1,5 +1,6 @@
 #include <string>
 
+#include "diagnostics.h"
 #include "utils/ini_reader/ini_reader.h"
 #include "utils/logger.h"
 #include "utils/rapidjson_extra.h"
@@ -29,6 +30,13 @@ std::string buildGistData(std::string name, std::string content)
 
 int uploadGist(std::string name, std::string path, std::string content, bool writeManageURL)
 {
+    if(content.empty()) return -1;
+    if(auto context = currentDiagnostics())
+    {
+        std::lock_guard<std::mutex> lock(context->mutex);
+        if(context->metrics.contains("nodes_exported") && context->metrics["nodes_exported"] == 0)
+            return -1;
+    }
     INIReader ini;
     rapidjson::Document json;
     std::string token, id, username, retData, url;
