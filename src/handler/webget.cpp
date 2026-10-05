@@ -481,8 +481,12 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
     };
     if(flight->generation.load() != generation)
     {
-        latest_fetch_error = flight->error;
         if(flight->success && valid(flight->content)) return cached("shared", flight->content, flight->headers);
+        struct stat info {};
+        if(!force && stat(path.c_str(), &info) == 0 && difftime(time(nullptr), info.st_mtime) <= cache_ttl &&
+           readCache(path, content, headers) && valid(content))
+            return cached("hit", content, headers);
+        latest_fetch_error = flight->error;
         recordDownload({{"phase", currentPhase()}, {"source", safeSource(url)}, {"source_id", getMD5(url)},
             {"http_status", flight->status_code}, {"transport_code", flight->transport_code},
             {"success", false}, {"error", flight->error}, {"bytes", 0}, {"duration_ms", 0}, {"cache", "shared"}});

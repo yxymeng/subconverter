@@ -597,6 +597,49 @@ class Integration(unittest.TestCase):
         app.request(source,headers={'User-Agent':'UA-A'})
         app.request(source,headers={'User-Agent':'UA-B'})
         self.assertEqual(self.source.counts['/sub'],5)  # cold, expired, force, two distinct UAs
+    def test_failed_shared_refresh_obeys_waiters_cache_policy(self):
+        for path in ('/sub','/config','/template','/rule'):
+            self.source.routes['/sub']=(200,SUB,0)
+            self.source.routes['/rule']=(200,b'DOMAIN,kept.example\n',0)
+            self.source.routes['/template']=(200,b'port: 4321\nproxies: []\nproxy-groups: []\nrules: []\n',0)
+            config=self.config([self.source.origin+'/rule'])
+            app=self.app(fallback=False,template=self.source.origin+'/template',extra='download_timeout=5')
+            source=self.source.origin+'/sub'
+            status,seed,_=app.request(source,config)
+            self.assertEqual(status,200,seed)
+            original_body=self.source.routes[path][1]
+            previous={entry:entry.read_bytes() for entry in (app.root/'cache').glob('v2-*') if entry.read_bytes().endswith(original_body)}
+            self.assertTrue(previous)
+            for expired,manual in ((False,False),(True,False),(True,True)):
+                if manual and path!='/rule': continue
+                with self.subTest(path=path,expired=expired,manual=manual):
+                    if expired: self.expire(app)
+                    started=threading.Event(); release=threading.Event()
+                    def failing(number,headers):
+                        started.set(); release.wait(5)
+                        return (403,b'denied',0)
+                    self.source.routes[path]=failing
+                    before=self.source.counts[path]
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        forced=pool.submit(app.request,source,config,refresh='true')
+                        try:
+                            self.assertTrue(started.wait(3))
+                            ordinary=pool.submit(app.request,source,config,**({'use_stale':'true'} if manual else {}))
+                            time.sleep(.2)
+                            self.assertFalse(ordinary.done())
+                        finally: release.set()
+                        forced_status,forced_report,_=forced.result(timeout=10)
+                        status,report,_=ordinary.result(timeout=10)
+                    self.assertGreaterEqual(forced_status,400,forced_report)
+                    self.assertEqual(self.source.counts[path],before+1)
+                    if not expired or manual:
+                        self.assertEqual(status,200,report)
+                        self.assertIn('kept.example',report['output'])
+                        if not expired: self.assertTrue(all(d['success'] for d in report['downloads']))
+                        else: self.assertIn('stale',[d['cache'] for d in report['downloads']])
+                    else: self.assertGreaterEqual(status,400,report)
+                    for entry,content in previous.items(): self.assertEqual(entry.read_bytes(),content)
+
     def test_bounded_parallelism_and_rule_order(self):
         app=self.app(parallel=3)
         urls=[]
