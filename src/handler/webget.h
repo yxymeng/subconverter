@@ -49,7 +49,7 @@ std::string sourceOrigin(const std::string &url);
 std::string fetchCacheKey(const std::string &url, const std::string &proxy, const string_icase_map *headers = nullptr);
 
 int webGet(const FetchArgument& argument, FetchResult &result);
-std::string webGet(const std::string &url, const std::string &proxy = "", unsigned int cache_ttl = 0, std::string *response_headers = nullptr, string_icase_map *request_headers = nullptr, const std::function<bool(const std::string &)> &validate_content = {}, bool restrict_origin = false);
+std::string webGet(const std::string &url, const std::string &proxy = "", unsigned int cache_ttl = 0, std::string *response_headers = nullptr, string_icase_map *request_headers = nullptr, const std::function<bool(const std::string &)> &validate_content = {}, bool restrict_origin = false, const std::string &validation_policy = "");
 void flushCache();
 int webPost(const std::string &url, const std::string &data, const std::string &proxy, const string_icase_map &request_headers, std::string *retData);
 int webPatch(const std::string &url, const std::string &data, const std::string &proxy, const string_icase_map &request_headers, std::string *retData);

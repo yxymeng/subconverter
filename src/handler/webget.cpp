@@ -443,7 +443,7 @@ static void writeCache(const std::string &path, const std::string &body, const s
         writeLog(0, "Cannot write download cache", LOG_LEVEL_WARNING);
 }
 
-std::string webGet(const std::string &url, const std::string &proxy, unsigned int cache_ttl, std::string *response_headers, string_icase_map *request_headers, const std::function<bool(const std::string &)> &validate_content, bool restrict_origin)
+std::string webGet(const std::string &url, const std::string &proxy, unsigned int cache_ttl, std::string *response_headers, string_icase_map *request_headers, const std::function<bool(const std::string &)> &validate_content, bool restrict_origin, const std::string &validation_policy)
 {
     latest_fetch_error.clear();
     const auto valid = [&](const std::string &body) { return !validate_content || validate_content(body); };
@@ -468,9 +468,11 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
         return content;
     }
     md("cache");
-    const auto key = fetchCacheKey(url, proxy, request_headers);
+    const auto request_key = fetchCacheKey(url, proxy, request_headers);
+    const auto key = validation_policy.empty() ? request_key : getMD5(request_key + "\n" + validation_policy);
     const auto path = "cache/v2-" + key;
-    auto flight = cacheFlight(key);
+    // A callback without a stable policy ID cannot safely share another caller's validation result.
+    auto flight = validate_content && validation_policy.empty() ? std::make_shared<CacheFlight>() : cacheFlight(key);
     const auto generation = flight->generation.load();
     std::unique_lock<std::mutex> lock(flight->mutex);
     const auto cached = [&](const std::string &state, const std::string &body, const std::string &response) {

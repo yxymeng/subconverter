@@ -319,7 +319,7 @@ void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &
             }
             writeLog(0, "Updating ruleset url '" + rule_url + "' with group '" + rule_group + "'.", LOG_LEVEL_INFO);
             rc = {rule_group, rule_url, rule_url_typed, type, fetchFileAsync(rule_url, proxy, global.cacheRuleset, true, global.asyncFetchRuleset,
-                [type](const std::string &content) { return validRuleset(content, type); }), x.Interval};
+                [type](const std::string &content) { return validRuleset(content, type); }, "ruleset:" + std::to_string(type)), x.Interval};
         }
         ruleset_content_array.emplace_back(std::move(rc));
     }

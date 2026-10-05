@@ -129,18 +129,18 @@ FetchExecutor &fetchExecutor()
 
 void resizeFetchExecutor(int count) { fetchExecutor().resize(count); }
 
-std::shared_future<std::string> fetchFileAsync(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local, bool async, std::function<bool(const std::string &)> validate_content)
+std::shared_future<std::string> fetchFileAsync(const std::string &path, const std::string &proxy, int cache_ttl, bool find_local, bool async, std::function<bool(const std::string &)> validate_content, std::string validation_policy)
 {
     auto context = currentDiagnostics();
     auto phase = currentPhase();
-    auto result = fetchExecutor().submit([path, proxy, cache_ttl, find_local, context, phase, validate_content] {
+    auto result = fetchExecutor().submit([path, proxy, cache_ttl, find_local, context, phase, validate_content, validation_policy] {
         DiagnosticScope scope(context, phase);
         if(find_local && fileExist(path, true))
         {
             auto content = fileGet(path, true);
             return !validate_content || validate_content(content) ? content : std::string();
         }
-        if(isLink(path)) return webGet(path, proxy, cache_ttl, nullptr, nullptr, validate_content);
+        if(isLink(path)) return webGet(path, proxy, cache_ttl, nullptr, nullptr, validate_content, false, validation_policy);
         return std::string();
     });
     if(!async) result.wait();

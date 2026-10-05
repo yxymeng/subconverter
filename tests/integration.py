@@ -640,6 +640,52 @@ class Integration(unittest.TestCase):
                     else: self.assertGreaterEqual(status,400,report)
                     for entry,content in previous.items(): self.assertEqual(entry.read_bytes(),content)
 
+    def test_shared_downloads_separate_validation_policies(self):
+        app=self.app(fallback=False,extra='download_timeout=5')
+        rule=self.source.origin+'/policy-rule'
+        strict_config=self.config(['clash-ipcidr:'+rule])
+        self.source.routes['/policy-ip-config']=self.source.routes['/config']
+        strict_config=self.source.origin+'/policy-ip-config'
+        self.config(['clash-domain:'+rule])
+        self.source.routes['/policy-domain-config']=self.source.routes['/config']
+        domain_config=self.source.origin+'/policy-domain-config'
+        source=self.source.origin+'/sub'
+        domain_body=b'payload: [policy.example]\n'
+        first_started=threading.Event(); release=threading.Event()
+        def upstream(number,headers):
+            if number==1: first_started.set()
+            release.wait(5)
+            return (200,domain_body,0)
+        self.source.routes['/policy-rule']=upstream
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            strict=pool.submit(app.request,source,strict_config)
+            try:
+                self.assertTrue(first_started.wait(3))
+                domains=[pool.submit(app.request,source,domain_config) for _ in range(2)]
+                time.sleep(.2)
+            finally: release.set()
+            status,report,_=strict.result(timeout=10)
+            self.assertEqual(status,502,report)
+            for result in domains:
+                status,report,_=result.result(timeout=10)
+                self.assertEqual(status,200,report)
+                self.assertIn('policy.example',report['output'])
+        self.assertEqual(self.source.counts['/policy-rule'],2)
+        # An accepted domain update must also preserve the other policy's last good cache.
+        ip_body=b'payload: [192.0.2.0/24]\n'
+        self.source.routes['/policy-rule']=(200,ip_body,0)
+        status,report,_=app.request(source,strict_config,refresh='true')
+        self.assertEqual(status,200,report); self.assertIn('192.0.2.0/24',report['output'])
+        previous={entry:entry.read_bytes() for entry in (app.root/'cache').glob('v2-*') if entry.read_bytes().endswith(ip_body)}
+        self.assertTrue(previous)
+        self.source.routes['/policy-rule']=(200,domain_body,0)
+        self.assertEqual(app.request(source,domain_config,refresh='true')[0],200)
+        before=self.source.counts['/policy-rule']
+        status,report,_=app.request(source,strict_config,use_stale='true')
+        self.assertEqual(status,200,report); self.assertIn('192.0.2.0/24',report['output'])
+        self.assertEqual(self.source.counts['/policy-rule'],before)
+        for entry,body in previous.items(): self.assertEqual(entry.read_bytes(),body)
+
     def test_bounded_parallelism_and_rule_order(self):
         app=self.app(parallel=3)
         urls=[]
