@@ -1168,6 +1168,7 @@ bool readConf(const std::string *new_config)
     {
         bool refresh_tasks = false;
         Settings candidate = global;
+        candidate.subscriptionHeadersConfig = "{}";
         WebServer candidate_server;
         candidate_server.redirect_map = webServer.redirect_map;
         candidate_server.serve_file_root = webServer.serve_file_root;
@@ -1192,6 +1193,7 @@ bool readConf(const std::string *new_config)
             return false;
         }
         std::atomic_store(&active_download_settings, settings);
+        notifyDownloadSettingsChanged();
         committed = true;
         return true;
     }

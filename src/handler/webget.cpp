@@ -5,6 +5,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#endif
+#include "server/socket.h"
+#ifdef _WIN32
 #include <windows.h>
 #endif
 //#include <mutex>
@@ -93,6 +96,12 @@ class DownloadPermit
     static std::condition_variable ready;
     static int active;
 public:
+    static void settingsChanged()
+    {
+        // Synchronize with the wait predicate so a reload cannot lose its wakeup.
+        std::lock_guard<std::mutex> lock(mutex);
+        ready.notify_all();
+    }
     DownloadPermit()
     {
         std::unique_lock<std::mutex> lock(mutex);
@@ -104,6 +113,8 @@ public:
 std::mutex DownloadPermit::mutex;
 std::condition_variable DownloadPermit::ready;
 int DownloadPermit::active = 0;
+
+void notifyDownloadSettingsChanged() { DownloadPermit::settingsChanged(); }
 
 
 //std::string user_agent_str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36";
@@ -139,6 +150,42 @@ struct ResponseHeaders
 };
 
 static bool selfRequest(const std::string &url);
+
+static bool selfEndpoint(const char *host, int port)
+{
+    return global.boundListenPort != 0 && port == global.boundListenPort &&
+        hostPointsToLocalServer(host, global.boundListenAddress);
+}
+
+static curl_socket_t guardedSocket(void *client, curlsocktype, curl_sockaddr *address)
+{
+    auto *response = static_cast<ResponseHeaders *>(client);
+    char host[NI_MAXHOST], port[NI_MAXSERV];
+    if(getnameinfo(&address->addr, address->addrlen, host, sizeof(host), port, sizeof(port),
+                   NI_NUMERICHOST | NI_NUMERICSERV) != 0)
+        return CURL_SOCKET_BAD;
+    if(selfEndpoint(host, to_int(port)))
+    {
+        response->blocked = response->self_reference = true;
+        return CURL_SOCKET_BAD;
+    }
+    // Check the actual numeric connection address, including every redirect.
+    return socket(address->family, address->socktype, address->protocol);
+}
+
+#if LIBCURL_VERSION_NUM >= 0x075000
+static int guardedPeer(void *client, char *primary_ip, char *, int primary_port, int)
+{
+    auto *response = static_cast<ResponseHeaders *>(client);
+    // This also runs before requests on reused connections.
+    if(selfEndpoint(primary_ip, primary_port))
+    {
+        response->blocked = response->self_reference = true;
+        return CURL_PREREQFUNC_ABORT;
+    }
+    return CURL_PREREQFUNC_OK;
+}
+#endif
 
 static size_t headerWriter(char *data, size_t size, size_t nmemb, ResponseHeaders *response)
 {
@@ -270,6 +317,16 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
     std::string body, response_headers;
     ResponseHeaders response {handle, &response_headers, argument.restrict_origin};
+    curl_easy_setopt(handle, CURLOPT_OPENSOCKETFUNCTION, guardedSocket);
+    curl_easy_setopt(handle, CURLOPT_OPENSOCKETDATA, &response);
+#if LIBCURL_VERSION_NUM >= 0x075000
+    curl_easy_setopt(handle, CURLOPT_PREREQFUNCTION, guardedPeer);
+    curl_easy_setopt(handle, CURLOPT_PREREQDATA, &response);
+#else
+    // Older cURL has no per-request peer callback; require a guarded new socket.
+    curl_easy_setopt(handle, CURLOPT_FRESH_CONNECT, 1L);
+    curl_easy_setopt(handle, CURLOPT_FORBID_REUSE, 1L);
+#endif
     curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, writer);
     curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, headerWriter);

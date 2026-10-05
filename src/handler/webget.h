@@ -44,6 +44,7 @@ struct FetchResult
 };
 
 std::string lastFetchError();
+void notifyDownloadSettingsChanged();
 std::string sourceOrigin(const std::string &url);
 std::string fetchCacheKey(const std::string &url, const std::string &proxy, const string_icase_map *headers = nullptr);
 

@@ -55,4 +55,5 @@ g++ $(find CMakeFiles/subconverter.dir/src -name "*.obj") curl/lib/libcurl.a -o 
 # Bundled rules are kept from this source checkout for traceable releases.
 
 python tests/integration.py --binary base/subconverter.exe --base base
+python tests/check_build.py --binary base/subconverter.exe --commit "$(git rev-parse HEAD)"
 mv base subconverter

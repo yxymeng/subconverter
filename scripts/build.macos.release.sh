@@ -65,6 +65,7 @@ chmod +rx subconverter
 chmod +r ./*
 cd ..
 python tests/integration.py --binary base/subconverter --base base
+python tests/check_build.py --binary base/subconverter --commit "$(git rev-parse HEAD)"
 mv base subconverter
 
 set +xe

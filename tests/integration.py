@@ -35,7 +35,7 @@ def get(url, headers=None):
         return error.code, error.read(), dict(error.headers)
 
 class Source:
-    def __init__(self):
+    def __init__(self, listen='127.0.0.1', port=0):
         self.lock = threading.Lock()
         self.counts = Counter()
         self.headers = {}
@@ -71,9 +71,9 @@ class Source:
                 try: self.wfile.write(body)
                 except (BrokenPipeError, ConnectionResetError): pass
                 if len(route) > 3 and route[3] == 'truncate': self.close_connection = True
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.server = ThreadingHTTPServer((listen, port), Handler)
         self.server.daemon_threads = True
-        self.origin = 'http://127.0.0.1:' + str(self.server.server_port)
+        self.origin = 'http://' + listen + ':' + str(self.server.server_port)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
     def close(self):
@@ -84,7 +84,7 @@ class Source:
 class App:
     def __init__(self, extra='', asynchronous=True, parallel=4, proxy='NONE', default_url='',
                  listen='127.0.0.1', fallback=True, template='base/fixture.yml', workers=8,
-                 port=None, origin_host='127.0.0.1'):
+                 port=None, origin_host='127.0.0.1', env=None):
         self.temp = tempfile.TemporaryDirectory(prefix='subconverter-test-')
         self.root = Path(self.temp.name)
         shutil.copytree(BASE, self.root, dirs_exist_ok=True)
@@ -129,7 +129,7 @@ skip_failed_links=true
 {extra}
 ''')
         self.log = open(self.root / 'stderr.log', 'wb')
-        self.process = subprocess.Popen([str(BINARY), '-f', str(self.pref)], stdout=subprocess.DEVNULL, stderr=self.log)
+        self.process = subprocess.Popen([str(BINARY), '-f', str(self.pref)], stdout=subprocess.DEVNULL, stderr=self.log, env=env)
         self.origin = 'http://' + origin_host + ':' + str(self.port)
         for _ in range(100):
             if self.process.poll() is not None: raise RuntimeError((self.root/'stderr.log').read_text())
@@ -262,6 +262,40 @@ class Integration(unittest.TestCase):
         self.assertEqual(status,200,report)
         self.assertEqual(report['downloads'][0]['attempts'],2)
         self.assertEqual(self.source.counts['/retry'],2)
+
+    def test_removed_source_headers_are_revoked(self):
+        policy=json.dumps({self.source.origin:{'X-Policy':'revoked-secret'}})
+        for mode in ('readconf','updateconf','automatic'):
+            app=self.app(extra='subscription_source_headers='+policy)
+            original=app.pref.read_text()
+            if mode=='automatic':
+                original=original.replace('api_mode=true','api_mode=false').replace('[common]\n','[common]\nreload_conf_on_request=true\n')
+                app.pref.write_text(original)
+                self.assertEqual(get(app.origin+'/readconf')[0],200)
+            omitted={
+                'ini':original.replace('subscription_source_headers='+policy+'\n',''),
+                'toml':'version=1\n[common]\napi_mode='+str(mode!='automatic').lower()+'\nreload_conf_on_request='+str(mode=='automatic').lower()+'\n[advanced]\nmax_parallel_downloads=4\n',
+                'yaml':'common:\n  api_mode: '+str(mode!='automatic').lower()+'\n  reload_conf_on_request: '+str(mode=='automatic').lower()+'\nadvanced:\n  max_parallel_downloads: 4\n'
+            }
+            for format,body in omitted.items():
+                with self.subTest(mode=mode,format=format):
+                    app.pref.write_text(original)
+                    self.assertEqual(get(app.origin+'/readconf')[0],200)
+                    before=f'/before-omission-{mode}-{format}'
+                    self.assertEqual(app.request(self.source.origin+before,refresh='true')[0],200)
+                    self.assertEqual(self.source.headers[before]['X-Policy'],'revoked-secret')
+                    if mode=='updateconf':
+                        connection=http.client.HTTPConnection('127.0.0.1',app.port,timeout=10)
+                        connection.request('POST','/updateconf?type=direct',body.encode())
+                        response=connection.getresponse(); self.assertEqual(response.status,200,response.read()); connection.close()
+                    else:
+                        app.pref.write_text(body)
+                        if mode=='readconf': self.assertEqual(get(app.origin+'/readconf')[0],200)
+                    after=f'/after-omission-{mode}-{format}'
+                    status,report,_=app.request(self.source.origin+after,refresh='true')
+                    self.assertEqual(status,200,report)
+                    self.assertNotIn('X-Policy',self.source.headers[after])
+                    self.assertNotIn('revoked-secret',(app.root/'stderr.log').read_text())
 
     def test_exported_node_counts_and_empty_targets(self):
         bases={'surge':'surge.conf','surfboard':'surfboard.conf','mellow':'mellow.conf',
@@ -561,6 +595,69 @@ class Integration(unittest.TestCase):
                     positions=[report['output'].index(f'reload-{i}.example') for i in range(12)]
                     self.assertEqual(positions,sorted(positions))
                     previous_limit=limit
+
+    def test_raising_limit_wakes_existing_waiters(self):
+        app=self.app(parallel=1,extra='download_timeout=10')
+        entered=threading.Event(); released=threading.Event()
+        def blocker(number,headers):
+            entered.set(); released.wait(8)
+            return (200,SUB,0)
+        self.source.routes['/permit-blocker']=blocker
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            first=pool.submit(app.request,self.source.origin+'/permit-blocker')
+            try:
+                self.assertTrue(entered.wait(2))
+                pending=[pool.submit(app.request,self.source.origin+f'/permit-pending-{i}') for i in range(3)]
+                for _ in range(200):
+                    if (app.root/'stderr.log').read_text().count('Downloading subscription data...')>=4: break
+                    time.sleep(.01)
+                else: self.fail('Requests did not enter the download queue')
+                time.sleep(.1)
+                self.assertTrue(all(not future.done() for future in pending))
+                app.pref.write_text(app.pref.read_text().replace('max_parallel_downloads=1','max_parallel_downloads=4'))
+                self.assertEqual(get(app.origin+'/readconf')[0],200)
+                for future in pending:
+                    status,report,_=future.result(timeout=2)
+                    self.assertEqual(status,200,report)
+                self.assertFalse(first.done(),'New capacity must be used before the old download finishes')
+            finally: released.set()
+            self.assertEqual(first.result()[0],200)
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'DNS interposition requires Linux')
+    def test_dns_changes_cannot_reach_listener(self):
+        if not shutil.which('cc') or not shutil.which('ldd'):
+            self.skipTest('DNS interposition requires a C compiler and dynamic loader')
+        if subprocess.run(['ldd',str(BINARY)],capture_output=True).returncode:
+            self.skipTest('Static binaries cannot load a DNS interposer')
+        with tempfile.TemporaryDirectory(prefix='subconverter-dns-') as directory:
+            library=Path(directory)/'dns-rebind.so'
+            log=Path(directory)/'dns.log'
+            subprocess.run(['cc','-shared','-fPIC','-pthread',str(Path(__file__).with_name('dns_rebind.c')),'-ldl','-o',str(library)],check=True)
+            env={**os.environ,'LD_PRELOAD':str(library)+(':'+os.environ['LD_PRELOAD'] if os.environ.get('LD_PRELOAD') else ''),'SUBCONVERTER_DNS_TEST_LOG':str(log)}
+            app=self.app(parallel=2,fallback=False,workers=2,env=env)
+            destination='/sub?'+urlencode({'target':'clash','url':self.source.origin+'/sub'})
+            direct=f'http://direct-rebind.invalid:{app.port}'+destination
+            redirect=f'http://redirect-rebind.invalid:{app.port}'+destination
+            self.source.routes['/dns-redirect']=(302,b'',0,{'Location':redirect})
+            for source in (direct,self.source.origin+'/dns-redirect'):
+                status,report,_=app.request(source,refresh='true')
+                self.assertGreaterEqual(status,400,report)
+                self.assertIn('Self-referencing',str(report))
+                self.assertEqual(report['downloads'][0]['attempts'],1)
+                self.assertEqual(get(app.origin+'/status')[0],200)
+            resolutions=log.read_text()
+            for host in ('direct-rebind.invalid','redirect-rebind.invalid'):
+                self.assertIn(host+' 127.0.0.2',resolutions)
+                self.assertIn(host+' 127.0.0.1',resolutions)
+            self.assertEqual(self.source.counts['/sub'],0,'No recursive conversion may run')
+            external=Source(listen='127.0.0.2',port=app.port)
+            try:
+                for _ in range(2):
+                    status,report,_=app.request(f'http://safe-dns.invalid:{app.port}/sub',refresh='true')
+                    self.assertEqual(status,200,report)
+                    self.assertIn('fixture-node',report['output'])
+                self.assertEqual(external.counts['/sub'],2)
+            finally: external.close()
 
     def test_startup_check_port_conflict_and_bad_config(self):
         app=self.app()

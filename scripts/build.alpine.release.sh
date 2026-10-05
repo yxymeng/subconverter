@@ -2,6 +2,11 @@
 set -xeuo pipefail
 source scripts/dependencies.sh
 
+# Git must trust this known mounted checkout, and source identification must succeed.
+git config --global --add safe.directory "$(pwd -P)"
+BUILD_COMMIT=$(git rev-parse --verify HEAD)
+test -n "$BUILD_COMMIT"
+
 apk add gcc g++ build-base linux-headers cmake make autoconf automake libtool python3 py3-pip
 apk add mbedtls-dev mbedtls-static zlib-dev zlib-static pcre2-dev pcre2-static brotli-dev brotli-static zstd-dev zstd-static libpsl-dev libpsl-static
 
@@ -46,7 +51,7 @@ make install -j4
 cd ..
 
 export PKG_CONFIG_PATH=/usr/lib64/pkgconfig
-cmake -DCMAKE_BUILD_TYPE=Release . -DSUBCONVERTER_BUILD_COMMIT="$(git rev-parse HEAD)"
+cmake -DCMAKE_BUILD_TYPE=Release . -DSUBCONVERTER_BUILD_COMMIT="$BUILD_COMMIT"
 make -j3
 rm subconverter
 # shellcheck disable=SC2046
@@ -59,4 +64,5 @@ chmod +rx subconverter
 chmod +r ./*
 cd ..
 python3 tests/integration.py --binary base/subconverter --base base
+python3 tests/check_build.py --binary base/subconverter --commit "$BUILD_COMMIT"
 mv base subconverter
