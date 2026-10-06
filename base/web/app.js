@@ -6,7 +6,7 @@ let extras = {}, result = '', controller;
 function message(text, style='') { $('message').textContent=text; $('message').className='message '+style; }
 function values() {
   const data={};
-  for(const key of fields) { const el=$(key); data[key]=el.type==='checkbox' ? String(el.checked) : el.value.trim(); }
+  for(const key of fields) { const el=$(key); data[key]=el.type==='checkbox' ? String(el.checked) : ['include','exclude'].includes(key) ? el.value : el.value.trim(); }
   if($('preset').value==='default') data.config='';
   return data;
 }

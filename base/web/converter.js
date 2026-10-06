@@ -20,7 +20,7 @@
     const url = new URL(text);
     if (!['http:','https:'].includes(url.protocol) || !['/sub','/diagnose'].includes(url.pathname)) throw new Error('请输入完整的 /sub 转换链接。');
     const values = {}, extra = {};
-    for (const [key,value] of url.searchParams) (known.includes(key) ? values : extra)[key] = value;
+    for (const key of new Set(url.searchParams.keys())) (known.includes(key) ? values : extra)[key] = url.searchParams.get(key);
     if (values.url) values.url = values.url.split('|').join('\n');
     return {values, extra};
   }
